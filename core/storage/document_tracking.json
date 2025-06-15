@@ -1,0 +1,17 @@
+{
+  "documents": {
+    "/Users/vaibhavagarwal/Desktop/dev/wolfia/core/files/Cloud Computing Adoption Security Policy.docx": {
+      "hash": "e9751f63eec3e4c798499401fb36686453f7b8c08fa688b883f821963c974e1e",
+      "processed_at": "2025-06-15T20:14:36.694078",
+      "chunk_count": 3,
+      "file_size": 261344
+    },
+    "/Users/vaibhavagarwal/Desktop/dev/wolfia/core/files/Malware and Antivirus Policy.docx": {
+      "hash": "a2f2573f211d4c58553981f79f3d162799aa0a4558c08d799e9aa400d289103b",
+      "processed_at": "2025-06-15T20:15:06.827409",
+      "chunk_count": 3,
+      "file_size": 25086
+    }
+  },
+  "last_updated": "2025-06-15T20:15:06.827417"
+}
