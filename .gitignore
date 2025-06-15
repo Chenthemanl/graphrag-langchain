@@ -198,3 +198,4 @@ files/
 logs/
 documents/
 core/storage/chromadb/
+.DS_Store
