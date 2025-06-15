@@ -1,261 +1,333 @@
-# Enhanced Knowledge Graph RAG System with AstraDB
+# Knowledge Graph RAG FastAPI Application
 
-This enhanced Python script creates a sophisticated knowledge graph-based Retrieval-Augmented Generation (RAG) system that integrates AstraDB for persistent vector storage, Neo4j for graph databases, and implements intelligent document tracking to prevent redundant processing.
+This FastAPI application provides a simple REST API interface to query documents using a combination of knowledge graph and vector search technologies.
 
-## 🚀 Key Features
+## Features
 
-### ✅ Implemented Enhancements
+- **Document Processing**: Automatically processes `.docx` files and creates semantic chunks
+- **Vector Storage**: Supports both in-memory and persistent ChromaDB vector storage
+- **Knowledge Graph**: Uses Neo4j to store and query relationships between entities
+- **Embedding Caching**: Efficient caching system to avoid regenerating embeddings
+- **Graph Retrieval**: Advanced retrieval strategy combining vector similarity and graph traversal
+- **RESTful API**: Clean REST API with automatic documentation
 
-1. **Document Tracking System**: Prevents recreation of embeddings for unchanged documents using SHA256 hashing
-2. **AstraDB Integration**: Replaces InMemoryVectorStore with persistent AstraDB storage
-3. **Incremental Processing**: Only processes new or modified documents
-4. **Robust Error Handling**: Comprehensive error handling throughout the pipeline
-5. **Scalable Architecture**: Optimized for large document sets with batch processing
-6. **Command-line Interface**: Flexible execution options with argument parsing
+## Quick Start
 
-### 🏗️ System Architecture
+### 1. Environment Setup
 
+Create a `.env` file in the project root with your credentials:
+
+```env
+# Google AI API
+GOOGLE_API_KEY=your_google_api_key_here
+
+# Neo4j Database
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=your_neo4j_password_here
 ```
-Documents (.docx) → Document Tracker → Semantic Chunking → AstraDB Vector Store
-                                     ↓
-Knowledge Graph ← Neo4j Database ← LLM Graph Transformer
-                                     ↓
-GraphRetriever ← Vector Store + Knowledge Graph → RAG Chain → LLM Response
-```
 
-## 📋 Prerequisites
-
-### Required Dependencies
+### 2. Install Dependencies
 
 ```bash
-pip install langchain_core langchain_google_genai langchain_neo4j langchain_community 
-pip install langchain_experimental langchain_astradb astrapy graph_retriever
+# Install required packages
+pip install -r requirements.txt
 ```
 
-### Environment Setup
+### 3. Add Documents
 
-1. **Google AI API Key** (for embeddings and LLM):
-   ```bash
-   export GOOGLE_API_KEY="your-google-api-key"
-   ```
-
-2. **Neo4j Database**:
-   ```bash
-   export NEO4J_URI="bolt://localhost:7687"
-   export NEO4J_USERNAME="neo4j"
-   export NEO4J_PASSWORD="your-password"
-   ```
-
-3. **AstraDB Credentials** (DataStax Astra DB):
-   ```bash
-   export ASTRA_DB_API_ENDPOINT="your-astra-db-endpoint"
-   export ASTRA_DB_APPLICATION_TOKEN="your-astra-db-token"
-   ```
-
-## 🔧 Configuration
-
-### AstraDB Setup
-
-1. Create a DataStax Astra DB account at [astra.datastax.com](https://astra.datastax.com)
-2. Create a new database and get your API endpoint
-3. Generate an application token with appropriate permissions
-4. Set the environment variables as shown above
-
-### File Structure
-
-```
-wolfia/
-├── files/                          # Place your .docx files here
-│   ├── document1.docx
-│   ├── document2.docx
-│   └── ...
-├── main_with_llmgraphtranformer.py  # Enhanced main script
-├── document_tracking.json          # Auto-generated tracking file
-└── logs/                           # Optional log directory
-```
-
-## 🚀 Usage
-
-### Basic Usage
+Place your `.docx` files in the `core/files/` directory:
 
 ```bash
-# First run - processes all documents
-python main_with_llmgraphtranformer.py
-
-# Subsequent runs - only processes new/changed documents
-python main_with_llmgraphtranformer.py
+mkdir -p core/files
+# Copy your .docx files to the core/files directory
+cp your_documents/*.docx core/files/
 ```
 
-### Advanced Options
+### 4. Start the API
 
 ```bash
-# Force reprocess all documents (ignores tracking)
-python main_with_llmgraphtranformer.py --force-reprocess
+# Simple start
+python start_api.py
 
-# Clean Neo4j database before processing
-python main_with_llmgraphtranformer.py --clean-neo4j
-
-# Only run tests (skip document processing)
-python main_with_llmgraphtranformer.py --test-only
-
-# Combine options
-python main_with_llmgraphtranformer.py --force-reprocess --clean-neo4j
+# Or with custom options
+python start_api.py --port 8080 --reload --log-level debug
 ```
 
-## 🔍 How It Works
+The API will be available at `http://localhost:8000`
 
-### 1. Document Tracking System
+**Note**: By default, the system uses in-memory vector storage and does not clean the Neo4j database on startup. This provides faster startup times and preserves existing graph data.
 
-The `DocumentTracker` class maintains a JSON file (`document_tracking.json`) that stores:
-- File paths and SHA256 hashes
-- Processing timestamps
-- Chunk counts and file metadata
+## API Endpoints
 
+### GET `/`
+Basic API information and status
+
+### GET `/status`
+Get system status including:
+- Initialization status
+- Vector store type (ChromaDB or In-Memory)
+- Graph statistics (nodes and relationships)
+- Error information if any
+
+**Response:**
 ```json
 {
-  "documents": {
-    "/path/to/document.docx": {
-      "hash": "sha256-hash",
-      "processed_at": "2024-01-01T12:00:00.000Z",
-      "chunk_count": 15,
-      "file_size": 1024000
-    }
-  },
-  "last_updated": "2024-01-01T12:00:00.000Z"
+  "initialized": true,
+  "vector_store_type": "InMemoryVectorStore",
+  "documents_processed": null,
+  "graph_nodes": 150,
+  "graph_relationships": 75,
+  "error": null
 }
 ```
 
-### 2. Incremental Processing Pipeline
+### POST `/query` or GET `/query`
+Query the knowledge graph RAG system
 
-1. **Document Analysis**: Check each .docx file against tracking data
-2. **Hash Comparison**: Calculate SHA256 hash to detect changes
-3. **Selective Processing**: Only process new/changed documents
-4. **Update Tracking**: Record processed documents with metadata
+**POST Request Body:**
+```json
+{
+  "query": "Who must approve exceptions to the Malware Policy?"
+}
+```
 
-### 3. AstraDB Integration
+**GET Request:**
+```
+GET /query?query=Who must approve exceptions to the Malware Policy?
+```
 
-- **Persistent Storage**: Documents are stored permanently in AstraDB
-- **Incremental Updates**: New documents are added to existing collections
-- **Metadata Queries**: Support for complex metadata-based retrieval
-- **Scalability**: Handles large document collections efficiently
+**Response:**
+```json
+{
+  "answer": "According to the policy documents, exceptions to the Malware and Antivirus Policy must be approved by the Chief Information Security Officer (CISO) at [Company Name].",
+  "query": "Who must approve exceptions to the Malware Policy?",
+  "metadata": {
+    "timestamp": 1703123456.789,
+    "vector_store_type": "InMemoryVectorStore"
+  }
+}
+```
 
-### 4. Error Handling
+### POST `/reinitialize`
+Reinitialize the system (useful after adding new documents)
 
-- **Connection Resilience**: Graceful handling of database connection issues
-- **Processing Continuity**: System continues even if individual documents fail
-- **Fallback Mechanisms**: Falls back to basic retrieval if GraphRetriever fails
-- **Detailed Logging**: Comprehensive error reporting and progress tracking
+**Parameters:**
+- `force_reprocess`: Force reprocessing of all documents (default: false)
+- `clean_neo4j`: Clean Neo4j database before reprocessing (default: false)
+- `use_chromadb`: Use ChromaDB for storage (default: auto-detect)
 
-## 📊 Monitoring and Debugging
+## System Architecture
 
-### Tracking File Analysis
+### File Structure
+```
+wolfia/
+├── core/
+│   ├── api.py                          # FastAPI application
+│   ├── main_with_llmgraphtranformer.py # Main processing pipeline
+│   ├── embedding_cache.py              # Embedding caching system
+│   ├── document_tracker.py             # Document processing tracker
+│   ├── config.py                       # Configuration settings
+│   ├── files/                          # Document storage directory
+│   └── storage/                        # Persistent storage
+│       ├── chromadb/                   # ChromaDB storage (when enabled)
+│       ├── embedding_cache.json        # Embedding cache file
+│       └── document_tracking.json      # Document tracking file
+├── start_api.py                        # API startup script
+├── requirements.txt                    # Dependencies
+└── README_API.md                       # This documentation
+```
 
-The `document_tracking.json` file provides insights into:
-- Which documents have been processed
-- When they were last processed
-- How many chunks were created
-- File modification detection
+### Document Processing Pipeline
 
-### System Statistics
+1. **Document Loading**: Loads `.docx` files from the `core/files/` directory
+2. **Semantic Chunking**: Uses embedding-based semantic chunking for optimal text segmentation
+3. **Embedding Generation**: Creates embeddings using Google's Gemini embedding model with caching
+4. **Vector Storage**: Stores embeddings in either ChromaDB (persistent) or in-memory vector store
+5. **Graph Processing**: Extracts entities and relationships using LLM Graph Transformer and stores in Neo4j
+6. **Retrieval Setup**: Configures graph-based retrieval with vector similarity fallback
 
-The system reports:
-- Number of documents processed vs. skipped
-- Neo4j node and relationship counts
-- Vector store status and document counts
-- Processing times and error rates
+### Query Processing
 
-## 🔧 Troubleshooting
+1. **Query Reception**: API receives user query
+2. **Graph Retrieval**: Uses graph traversal strategy to find relevant documents
+3. **Vector Fallback**: Falls back to vector similarity if graph retrieval insufficient
+4. **Context Assembly**: Combines retrieved documents into context
+5. **Answer Generation**: Uses LLM to generate answer based on context
+6. **Response Formatting**: Returns structured response with metadata
+
+## Configuration Options
+
+### Vector Storage
+
+The system supports both storage options:
+- **In-Memory**: Default storage, faster startup, no persistence, better for development and testing
+- **ChromaDB**: Persistent storage, survives restarts, better for production (can be enabled via reinitialize endpoint)
+
+### Environment Variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `GOOGLE_API_KEY` | Google AI API key for embeddings and LLM | Yes |
+| `NEO4J_URI` | Neo4j database URI | Yes |
+| `NEO4J_USERNAME` | Neo4j username | Yes |
+| `NEO4J_PASSWORD` | Neo4j password | Yes |
+
+## Usage Examples
+
+### Using curl
+
+```bash
+# Query via GET
+curl "http://localhost:8000/query?query=What is the password policy?"
+
+# Query via POST
+curl -X POST "http://localhost:8000/query" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is the password policy?"}'
+
+# Check system status
+curl "http://localhost:8000/status"
+
+# Reinitialize with new documents
+curl -X POST "http://localhost:8000/reinitialize?force_reprocess=true"
+```
+
+### Using Python requests
+
+```python
+import requests
+
+# Query the system
+response = requests.post(
+    "http://localhost:8000/query",
+    json={"query": "What are the data retention requirements?"}
+)
+result = response.json()
+print(result["answer"])
+
+# Check status
+status = requests.get("http://localhost:8000/status").json()
+print(f"System initialized: {status['initialized']}")
+print(f"Graph nodes: {status['graph_nodes']}")
+```
+
+### Using the Interactive Documentation
+
+Visit `http://localhost:8000/docs` for the automatically generated interactive API documentation where you can test all endpoints directly in your browser.
+
+## Performance and Caching
+
+### Embedding Cache
+- Automatically caches embeddings to avoid regeneration using `core/embedding_cache.py`
+- Persistent cache stored in `core/storage/embedding_cache.json`
+- Provides cache hit rate statistics
+- Significantly reduces processing time for repeated content
+
+### Document Tracking
+- Tracks processed documents by file hash using `core/document_tracker.py`
+- Tracking data stored in `core/storage/document_tracking.json`
+- Only processes new or changed documents
+- Maintains processing metadata and statistics
+
+### Storage Locations
+- **ChromaDB**: `core/storage/chromadb/` (when enabled)
+- **Document Cache**: `core/storage/embedding_cache.json`
+- **Document Tracking**: `core/storage/document_tracking.json`
+- **Documents**: `core/files/` directory
+
+## Troubleshooting
 
 ### Common Issues
 
-1. **AstraDB Connection Failed**
-   - Verify ASTRA_DB_API_ENDPOINT and ASTRA_DB_APPLICATION_TOKEN
-   - Check network connectivity
-   - Ensure token has sufficient permissions
+1. **Missing Environment Variables**
+   ```
+   Error: System not initialized: Missing required environment variables
+   ```
+   Solution: Ensure all required environment variables are set in `.env` file
 
-2. **Neo4j Connection Issues**
-   - Verify Neo4j is running
-   - Check connection parameters
-   - Ensure user has write permissions
+2. **No Documents Found**
+   ```
+   Warning: No .docx files found in core/files directory
+   ```
+   Solution: Add `.docx` files to the `core/files/` directory
 
-3. **Document Processing Errors**
-   - Verify .docx files are not corrupted
-   - Check file permissions
-   - Ensure sufficient disk space
+3. **Neo4j Connection Error**
+   ```
+   Error connecting to Neo4j: Failed to establish connection
+   ```
+   Solution: Ensure Neo4j is running and credentials are correct
 
-4. **Memory Issues with Large Documents**
-   - Use `--force-reprocess` sparingly
-   - Process documents in smaller batches
-   - Monitor system memory usage
+4. **ChromaDB Issues**
+   ```
+   ChromaDB is not available. Please install it with: pip install chromadb
+   ```
+   Solution: Install ChromaDB or use in-memory storage
 
-### Debug Mode
+### Debugging
 
-To enable detailed logging, modify the script to include:
+Enable debug logging:
+```bash
+python start_api.py --log-level debug
+```
+
+Check system status:
+```bash
+curl http://localhost:8000/status
+```
+
+## Development
+
+### Adding New Endpoints
+
+The FastAPI application is modular and can be easily extended. Add new endpoints to `core/api.py`:
+
 ```python
-import logging
-logging.basicConfig(level=logging.DEBUG)
+@app.post("/new-endpoint")
+async def new_endpoint():
+    # Your implementation here
+    pass
 ```
 
-## 🚀 Performance Optimization
+### Main Processing Module
 
-### For Large Document Sets
+The core processing logic is implemented in `core/main_with_llmgraphtranformer.py`, which includes:
+- Document loading and processing
+- LLM Graph Transformer for entity and relationship extraction
+- Vector store initialization (in-memory or ChromaDB)
+- Neo4j graph database integration
+- RAG chain setup with graph retrieval capabilities
 
-1. **Batch Processing**: Documents are processed individually to optimize memory usage
-2. **Selective Updates**: Only changed documents trigger graph updates
-3. **Efficient Hashing**: SHA256 calculation is optimized with chunked reading
-4. **Connection Pooling**: Database connections are reused efficiently
+### Customizing Retrieval
 
-### Recommended Settings
+The system uses LLM Graph Transformer for entity and relationship extraction. Modify the retrieval strategy in `core/main_with_llmgraphtranformer.py`:
 
-- **Process documents in batches** of 50-100 for very large collections
-- **Use incremental mode** for regular updates
-- **Clean Neo4j database** only when necessary
-- **Monitor AstraDB quotas** to avoid rate limiting
+```python
+# Customize LLM Graph Transformer settings
+llm_transformer = LLMGraphTransformer(
+    llm=llm,
+    allowed_nodes=["Person", "Organization", "Technology", "Policy"],
+    allowed_relationships=["MANAGES", "IMPLEMENTS", "REQUIRES", "APPROVES"]
+)
 
-## 📝 Sample Usage Scenarios
-
-### Initial Setup
-```bash
-# First time setup with all documents
-python main_with_llmgraphtranformer.py --clean-neo4j
+# Customize graph retrieval settings
+vector_retriever.search_kwargs = {"k": 10}  # Number of documents to retrieve
 ```
 
-### Daily Updates
-```bash
-# Regular operation - only processes new/changed files
-python main_with_llmgraphtranformer.py
-```
+## Security Considerations
 
-### Major Rebuild
-```bash
-# Complete reprocessing when needed
-python main_with_llmgraphtranformer.py --force-reprocess --clean-neo4j
-```
+- Store sensitive credentials in environment variables, not in code
+- Use HTTPS in production environments
+- Consider implementing API authentication for production use
+- Regularly update dependencies for security patches
 
-### Testing Only
-```bash
-# Test the system without processing documents
-python main_with_llmgraphtranformer.py --test-only
-```
+## Monitoring and Logging
 
-## 🔐 Security Considerations
+The application provides comprehensive logging for:
+- System initialization status
+- Document processing progress
+- Query processing times
+- Cache hit rates
+- Error conditions
 
-- Store API keys and tokens as environment variables
-- Use secure connections to databases
-- Implement proper access controls for AstraDB
-- Regular backup of tracking data and configurations
-- Monitor API usage and costs
-
-## 📈 Future Enhancements
-
-The system is designed to be extensible:
-- Support for additional document formats
-- Advanced metadata filtering
-- Custom embedding models
-- Distributed processing capabilities
-- Real-time document monitoring
-- Advanced graph traversal strategies
-
----
-
-For questions or issues, please refer to the error messages and logs for detailed information about any problems encountered during processing. 
+Monitor these logs to ensure optimal performance and catch issues early. 
