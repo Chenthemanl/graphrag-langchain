@@ -6,7 +6,7 @@ This implementation supports both in-memory and persistent vector storage option
 - ChromaDB: Persistent vector storage with collection management
 
 Components:
-- Document processing and tracking (DOCX and PDF support)
+- Document processing and tracking
 - Vector storage (InMemoryVectorStore or ChromaDB)
 - Neo4j graph database for relationships
 - Graph-based retrieval with fallback to vector similarity
@@ -28,7 +28,7 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGener
 from langchain_graph_retriever import GraphRetriever
 from langchain_experimental.graph_transformers import LLMGraphTransformer
 from langchain_neo4j import Neo4jGraph
-from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader
+from langchain_community.document_loaders import Docx2txtLoader
 from langchain_experimental.text_splitter import SemanticChunker
 from dotenv import load_dotenv
 from core.document_tracker import DocumentTracker
@@ -80,22 +80,16 @@ except Exception as e:
 # DOCUMENT PROCESSING FUNCTIONS
 # =============================================================================
 
-def load_and_chunk_documents(tracker: DocumentTracker, force_reprocess: bool = False) -> List[Document]:
+def load_and_chunk_docx_files(tracker: DocumentTracker, force_reprocess: bool = False) -> List[Document]:
     """
-    Load and chunk both DOCX and PDF files, skipping already processed documents unless force_reprocess is True
+    Load and chunk docx files, skipping already processed documents unless force_reprocess is True
     """
     documents = []
-    
-    # Get both DOCX and PDF files
     docx_files = glob.glob(os.path.join(FILES_DIRECTORY, "*.docx"))
-    pdf_files = glob.glob(os.path.join(FILES_DIRECTORY, "*.pdf"))
-    all_files = docx_files + pdf_files
     
-    if not all_files:
-        print(f"No .docx or .pdf files found in {FILES_DIRECTORY} directory")
+    if not docx_files:
+        print(f"No .docx files found in {FILES_DIRECTORY} directory")
         return documents
-    
-    print(f"Found {len(docx_files)} DOCX files and {len(pdf_files)} PDF files")
     
     # Initialize semantic chunker
     try:
@@ -106,229 +100,52 @@ def load_and_chunk_documents(tracker: DocumentTracker, force_reprocess: bool = F
     
     processed_count = 0
     skipped_count = 0
-    failed_count = 0
     
-    for file_path in all_files:
+    for docx_file in docx_files:
         try:
             # Check if document needs processing
-            if not force_reprocess and tracker.is_document_processed(file_path):
-                print(f"Skipping {file_path}: already processed and unchanged")
+            if not force_reprocess and tracker.is_document_processed(docx_file):
+                print(f"Skipping {docx_file}: already processed and unchanged")
                 skipped_count += 1
                 continue
             
-            print(f"📄 Processing {file_path}...")
+            print(f"📄 Processing {docx_file}...")
             
-            # Determine file type and use appropriate loader
-            file_extension = os.path.splitext(file_path)[1].lower()
-            
-            if file_extension == '.docx':
-                loader = Docx2txtLoader(file_path)
-            elif file_extension == '.pdf':
-                loader = PyPDFLoader(file_path)
-            else:
-                print(f"⚠️  Warning: Unsupported file type {file_extension} for {file_path}")
-                failed_count += 1
-                continue
-            
-            # Load the document
+            # Load the docx file
+            loader = Docx2txtLoader(docx_file)
             raw_docs = loader.load()
             
             if not raw_docs:
-                print(f"⚠️  Warning: No content loaded from {file_path}")
-                failed_count += 1
-                continue
-            
-            # Check if we actually got meaningful content
-            total_content = sum(len(doc.page_content.strip()) for doc in raw_docs)
-            if total_content < 50:  # Threshold for meaningful content
-                print(f"⚠️  Warning: Very little content extracted from {file_path} ({total_content} characters)")
-                failed_count += 1
+                print(f"⚠️  Warning: No content loaded from {docx_file}")
                 continue
             
             # Apply semantic chunking (this will generate embeddings for chunking)
             print(f"🔪 Applying semantic chunking (this generates embeddings for chunking)...")
             chunks = text_splitter.split_documents(raw_docs)
-            print(f"✅ Created {len(chunks)} semantic chunks from {len(raw_docs)} pages/sections")
+            print(f"✅ Created {len(chunks)} semantic chunks")
             
-            # Add enhanced file metadata to chunks
+            # Add file metadata to chunks
             for chunk in chunks:
                 chunk.metadata.update({
-                    "source_file": os.path.basename(file_path),
-                    "file_path": file_path,
-                    "file_type": file_extension,
-                    "processed_at": datetime.now().isoformat(),
-                    "total_source_pages": len(raw_docs),
-                    "content_length": len(chunk.page_content)
+                    "source_file": os.path.basename(docx_file),
+                    "file_path": docx_file,
+                    "processed_at": datetime.now().isoformat()
                 })
             
             documents.extend(chunks)
             processed_count += 1
             
             # Mark document as processed
-            tracker.mark_document_processed(file_path, len(chunks))
+            tracker.mark_document_processed(docx_file, len(chunks))
             
-            print(f"✅ Successfully processed {file_path}: {len(chunks)} chunks created")
+            print(f"Processed {docx_file}: {len(chunks)} chunks created")
             
         except Exception as e:
-            print(f"❌ Error processing {file_path}: {str(e)}")
-            failed_count += 1
+            print(f"Error processing {docx_file}: {str(e)}")
             continue
-        
-        # Add delay to avoid rate limiting
         time.sleep(30)
     
-    print(f"\n📊 Document processing summary:")
-    print(f"   ✅ Processed: {processed_count}")
-    print(f"   ⏭️  Skipped: {skipped_count}")
-    print(f"   ❌ Failed: {failed_count}")
-    print(f"   📝 Total chunks: {len(documents)}")
-    
-    return documents
-
-def load_document_with_fallbacks(file_path: str):
-    """
-    Load document with multiple fallback strategies for PDFs
-    Enhanced version that tries multiple PDF loaders if one fails
-    """
-    file_extension = os.path.splitext(file_path)[1].lower()
-    
-    if file_extension == '.docx':
-        loader = Docx2txtLoader(file_path)
-        return loader.load()
-    
-    elif file_extension == '.pdf':
-        # Try PyPDF first (usually fastest)
-        try:
-            loader = PyPDFLoader(file_path)
-            docs = loader.load()
-            if docs and any(doc.page_content.strip() for doc in docs):
-                print(f"✅ Successfully loaded {file_path} with PyPDF")
-                return docs
-        except Exception as e:
-            print(f"PyPDF failed for {file_path}: {str(e)}")
-        
-        # Fallback to PyMuPDF (if available)
-        try:
-            from langchain_community.document_loaders import PyMuPDFLoader
-            loader = PyMuPDFLoader(file_path)
-            docs = loader.load()
-            if docs and any(doc.page_content.strip() for doc in docs):
-                print(f"✅ Successfully loaded {file_path} with PyMuPDF (fallback)")
-                return docs
-        except ImportError:
-            print(f"PyMuPDF not available for {file_path}")
-        except Exception as e:
-            print(f"PyMuPDF failed for {file_path}: {str(e)}")
-        
-        # Final fallback to Unstructured (if available)
-        try:
-            from langchain_community.document_loaders import UnstructuredPDFLoader
-            loader = UnstructuredPDFLoader(file_path)
-            docs = loader.load()
-            print(f"✅ Successfully loaded {file_path} with Unstructured (final fallback)")
-            return docs
-        except ImportError:
-            print(f"Unstructured not available for {file_path}")
-        except Exception as e:
-            print(f"All PDF loaders failed for {file_path}: {str(e)}")
-            return []
-    
-    else:
-        raise ValueError(f"Unsupported file type: {file_extension}")
-
-def load_and_chunk_documents_enhanced(tracker: DocumentTracker, force_reprocess: bool = False) -> List[Document]:
-    """
-    Enhanced version with multiple PDF loading strategies and better error handling
-    Use this version if you want robust PDF handling with fallbacks
-    """
-    documents = []
-    
-    # Get both DOCX and PDF files
-    docx_files = glob.glob(os.path.join(FILES_DIRECTORY, "*.docx"))
-    pdf_files = glob.glob(os.path.join(FILES_DIRECTORY, "*.pdf"))
-    all_files = docx_files + pdf_files
-    
-    if not all_files:
-        print(f"No .docx or .pdf files found in {FILES_DIRECTORY} directory")
-        return documents
-    
-    print(f"Found {len(docx_files)} DOCX files and {len(pdf_files)} PDF files")
-    
-    # Initialize semantic chunker
-    try:
-        text_splitter = SemanticChunker(embeddings)
-    except Exception as e:
-        print(f"Error initializing semantic chunker: {str(e)}")
-        raise
-    
-    processed_count = 0
-    skipped_count = 0
-    failed_count = 0
-    
-    for file_path in all_files:
-        try:
-            # Check if document needs processing
-            if not force_reprocess and tracker.is_document_processed(file_path):
-                print(f"Skipping {file_path}: already processed and unchanged")
-                skipped_count += 1
-                continue
-            
-            print(f"📄 Processing {file_path}...")
-            
-            # Load document with fallback strategies
-            raw_docs = load_document_with_fallbacks(file_path)
-            
-            if not raw_docs:
-                print(f"⚠️  Warning: No content loaded from {file_path}")
-                failed_count += 1
-                continue
-            
-            # Check if we actually got meaningful content
-            total_content = sum(len(doc.page_content.strip()) for doc in raw_docs)
-            if total_content < 50:  # Threshold for meaningful content
-                print(f"⚠️  Warning: Very little content extracted from {file_path} ({total_content} characters)")
-                failed_count += 1
-                continue
-            
-            # Apply semantic chunking
-            print(f"🔪 Applying semantic chunking...")
-            chunks = text_splitter.split_documents(raw_docs)
-            print(f"✅ Created {len(chunks)} semantic chunks from {len(raw_docs)} pages/sections")
-            
-            # Add enhanced metadata
-            file_extension = os.path.splitext(file_path)[1].lower()
-            for chunk in chunks:
-                chunk.metadata.update({
-                    "source_file": os.path.basename(file_path),
-                    "file_path": file_path,
-                    "file_type": file_extension,
-                    "processed_at": datetime.now().isoformat(),
-                    "total_source_pages": len(raw_docs),
-                    "content_length": len(chunk.page_content)
-                })
-            
-            documents.extend(chunks)
-            processed_count += 1
-            
-            # Mark document as processed
-            tracker.mark_document_processed(file_path, len(chunks))
-            
-            print(f"✅ Successfully processed {file_path}: {len(chunks)} chunks created")
-            
-        except Exception as e:
-            print(f"❌ Error processing {file_path}: {str(e)}")
-            failed_count += 1
-            continue
-        
-        # Add delay to avoid rate limiting
-        time.sleep(30)
-    
-    print(f"\n📊 Document processing summary:")
-    print(f"   ✅ Processed: {processed_count}")
-    print(f"   ⏭️  Skipped: {skipped_count}")
-    print(f"   ❌ Failed: {failed_count}")
-    print(f"   📝 Total chunks: {len(documents)}")
-    
+    print(f"Document processing complete: {processed_count} processed, {skipped_count} skipped")
     return documents
 
 def sanitize_type(type_name: str) -> str:
@@ -527,7 +344,7 @@ def add_documents_to_chromadb_store(vector_store, documents: List[Document]):
 # MAIN PROCESSING PIPELINE
 # =============================================================================
 
-def main(force_reprocess: bool = False, clean_neo4j: bool = False, use_chromadb: bool = False, enhanced_pdf: bool = False):
+def main(force_reprocess: bool = False, clean_neo4j: bool = False, use_chromadb: bool = False):
     """
     Main processing pipeline with configurable vector store backend
     
@@ -535,7 +352,6 @@ def main(force_reprocess: bool = False, clean_neo4j: bool = False, use_chromadb:
         force_reprocess: Force reprocessing of all documents
         clean_neo4j: Clean Neo4j database before processing
         use_chromadb: Use ChromaDB instead of in-memory vector store
-        enhanced_pdf: Use enhanced PDF processing with fallbacks
     """
     try:
         # Check ChromaDB availability if requested
@@ -547,21 +363,18 @@ def main(force_reprocess: bool = False, clean_neo4j: bool = False, use_chromadb:
         # Initialize document tracker
         tracker = DocumentTracker()
         
-        # Choose document loading function based on enhanced_pdf flag
-        load_function = load_and_chunk_documents_enhanced if enhanced_pdf else load_and_chunk_documents
-        
         # Load and process documents efficiently - avoiding multiple calls
-        print("Loading and processing documents (DOCX and PDF)...")
+        print("Loading and processing documents...")
         
         # Single document loading call based on requirements
         if force_reprocess:
             print("Force reprocessing all documents...")
-            all_documents = load_function(tracker, force_reprocess=True)
+            all_documents = load_and_chunk_docx_files(tracker, force_reprocess=True)
             documents_for_graph = all_documents
             documents_for_vector_store = all_documents
         else:
             print("Processing only new/changed documents...")
-            new_documents = load_function(tracker, force_reprocess=False)
+            new_documents = load_and_chunk_docx_files(tracker, force_reprocess=False)
             documents_for_graph = new_documents
             
             if use_chromadb:
@@ -571,11 +384,11 @@ def main(force_reprocess: bool = False, clean_neo4j: bool = False, use_chromadb:
                 # In-memory needs all documents, but we can still avoid reprocessing unchanged files
                 if new_documents:
                     print("New documents found, loading all documents for in-memory store...")
-                    all_documents = load_function(tracker, force_reprocess=True)
+                    all_documents = load_and_chunk_docx_files(tracker, force_reprocess=True)
                     documents_for_vector_store = all_documents
                 else:
                     print("No new documents, loading previously processed documents for in-memory store...")
-                    all_documents = load_function(tracker, force_reprocess=True)
+                    all_documents = load_and_chunk_docx_files(tracker, force_reprocess=True)
                     documents_for_vector_store = all_documents
         
         # Initialize vector store based on selected backend
@@ -724,8 +537,6 @@ if __name__ == "__main__":
                        help="Clean Neo4j database before processing")
     parser.add_argument("--chromadb", action="store_true", 
                        help="Use ChromaDB for persistent vector storage (default: in-memory)")
-    parser.add_argument("--enhanced-pdf", action="store_true", 
-                       help="Use enhanced PDF processing with multiple fallback loaders")
     parser.add_argument("--test-only", action="store_true", 
                        help="Only run tests, skip processing")
     parser.add_argument("--clear-cache", action="store_true", 
