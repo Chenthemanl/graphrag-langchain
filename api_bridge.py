@@ -14,7 +14,7 @@ import tempfile
 # Import your GraphRAG system (adjust based on your actual file names)
 try:
     # Import from your main GraphRAG file
-    from main import main as graphrag_main
+    from core.main_with_llmgraphtranformer import main as graphrag_main
     from core.document_tracker import DocumentTracker
     from core.config import FILES_DIRECTORY
     print("✅ Successfully imported GraphRAG system")
@@ -32,7 +32,7 @@ graph = None
 tracker = None
 
 # Path to your frontend files (in the article-analyzer folder)
-FRONTEND_PATH = "../article-analyzer"
+FRONTEND_PATH = "."  # Frontend files are in the same directory now
 
 def initialize_graphrag():
     """Initialize the GraphRAG system"""
@@ -229,4 +229,4 @@ if __name__ == '__main__':
         print("⚠️  GraphRAG system not initialized, but server will start anyway")
         print("💡 Try adding some documents first!")
     
-    app.run(debug=True, host='0.0.0.0', port=5000)
+app.run(debug=True, host='0.0.0.0', port=5001)
