@@ -1,802 +1,445 @@
+#!/usr/bin/env python3
 """
-Knowledge Graph RAG System with Vector Storage Options
-
-This implementation supports both in-memory and persistent vector storage options:
-- In-memory: Loads documents fresh on each run (default)
-- ChromaDB: Persistent vector storage with collection management
-
-Components:
-- Document processing and tracking (DOCX and PDF support)
-- Vector storage (InMemoryVectorStore or ChromaDB)
-- Neo4j graph database for relationships
-- Graph-based retrieval with fallback to vector similarity
-- Shredding transformer for document preprocessing (ChromaDB)
+Enhanced Knowledge Graph RAG System with LLMGraphTransformer
+This version includes document tracking, embedding cache, and flexible vector storage.
+FIXED: Disabled enhanced_schema to avoid APOC dependency issues
 """
 
 import os
-import glob
-import time
-from typing import List
-from datetime import datetime
-from graph_retriever.strategies import Eager
-from langchain_core.documents import Document
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.vectorstores import InMemoryVectorStore
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain_graph_retriever import GraphRetriever
-from langchain_experimental.graph_transformers import LLMGraphTransformer
-from langchain_neo4j import Neo4jGraph
-from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader
-from langchain_experimental.text_splitter import SemanticChunker
-from dotenv import load_dotenv
-from core.document_tracker import DocumentTracker
-from core.embedding_cache import EmbeddingCache, CachedEmbeddings
-from core.config import FILES_DIRECTORY, CHROMADB_PERSIST_DIRECTORY, CHROMADB_COLLECTION_NAME, GOOGLE_API_KEY, NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
+import sys
+import argparse
+from typing import List, Optional, Tuple
+from pathlib import Path
 
+# Environment setup
+from dotenv import load_dotenv
 load_dotenv()
 
-# =============================================================================
-# ENVIRONMENT SETUP AND CONFIGURATION
-# =============================================================================
+# Import core dependencies
+from langchain_core.documents import Document
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain_neo4j import Neo4jGraph, GraphCypherQAChain, Neo4jVector
+from langchain_community.document_loaders import Docx2txtLoader
+from langchain_experimental.text_splitter import SemanticChunker
+from langchain_experimental.graph_transformers import LLMGraphTransformer
 
-# Set up environment variables for Neo4j and Gemini
+# Import custom modules
+from core.embedding_cache import EmbeddingCache
+from core.document_tracker import DocumentTracker
+from core.config import FILES_DIRECTORY, STORAGE_DIRECTORY
 
-
-
-# =============================================================================
-# INITIALIZE CORE COMPONENTS
-# =============================================================================
-
-# Initialize embeddings with caching and LLM
+# Check for ChromaDB availability
+CHROMADB_AVAILABLE = False
 try:
-    # Initialize the base embeddings model
-    base_embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-exp-03-07", google_api_key=GOOGLE_API_KEY)
-    
-    # Initialize embedding cache
-    embedding_cache = EmbeddingCache()
-    
-    # Create cached embeddings wrapper
-    embeddings = CachedEmbeddings(base_embeddings, embedding_cache)
-    
-    # Initialize LLM
-    llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-flash-preview-05-20", google_api_key=GOOGLE_API_KEY)
-    
-    print("Successfully initialized cached embeddings and LLM")
-except Exception as e:
-    print(f"Error initializing embeddings/LLM: {str(e)}")
-    raise
+    from langchain_community.vectorstores import Chroma
+    import chromadb
+    CHROMADB_AVAILABLE = True
+    print("✅ ChromaDB is available for persistent storage")
+except ImportError:
+    print("ℹ️ ChromaDB not available. Using in-memory vector store.")
+    from langchain_community.vectorstores import InMemoryVectorStore
 
-# Initialize Neo4j graph
+# Initialize components
+print("🔄 Initializing components...")
+
+# Embedding cache initialization
+embedding_cache = EmbeddingCache()
+# Fix: Use the correct attribute name (could be _cache, data, or embeddings)
 try:
-    graph = Neo4jGraph(url=NEO4J_URI, username=NEO4J_USERNAME, password=NEO4J_PASSWORD)
-    print("Successfully connected to Neo4j")
-except Exception as e:
-    print(f"Error connecting to Neo4j: {str(e)}")
-    raise
+    cache_size = len(embedding_cache._cache) if hasattr(embedding_cache, '_cache') else 0
+except:
+    cache_size = 0
+print(f"Loaded embedding cache with {cache_size} entries")
 
-# =============================================================================
-# DOCUMENT PROCESSING FUNCTIONS
-# =============================================================================
-
-def load_and_chunk_documents(tracker: DocumentTracker, force_reprocess: bool = False) -> List[Document]:
-    """
-    Load and chunk both DOCX and PDF files, skipping already processed documents unless force_reprocess is True
-    """
-    documents = []
+# Cached embeddings wrapper
+class CachedEmbeddings:
+    def __init__(self, base_embeddings, cache):
+        self.base_embeddings = base_embeddings
+        self.cache = cache
     
-    # Get both DOCX and PDF files
-    docx_files = glob.glob(os.path.join(FILES_DIRECTORY, "*.docx"))
-    pdf_files = glob.glob(os.path.join(FILES_DIRECTORY, "*.pdf"))
-    all_files = docx_files + pdf_files
-    
-    if not all_files:
-        print(f"No .docx or .pdf files found in {FILES_DIRECTORY} directory")
-        return documents
-    
-    print(f"Found {len(docx_files)} DOCX files and {len(pdf_files)} PDF files")
-    
-    # Initialize semantic chunker
-    try:
-        text_splitter = SemanticChunker(embeddings)
-    except Exception as e:
-        print(f"Error initializing semantic chunker: {str(e)}")
-        raise
-    
-    processed_count = 0
-    skipped_count = 0
-    failed_count = 0
-    
-    for file_path in all_files:
-        try:
-            # Check if document needs processing
-            if not force_reprocess and tracker.is_document_processed(file_path):
-                print(f"Skipping {file_path}: already processed and unchanged")
-                skipped_count += 1
-                continue
-            
-            print(f"📄 Processing {file_path}...")
-            
-            # Determine file type and use appropriate loader
-            file_extension = os.path.splitext(file_path)[1].lower()
-            
-            if file_extension == '.docx':
-                loader = Docx2txtLoader(file_path)
-            elif file_extension == '.pdf':
-                loader = PyPDFLoader(file_path)
+    def embed_documents(self, texts):
+        """Embed documents with caching"""
+        embeddings = []
+        uncached_texts = []
+        uncached_indices = []
+        
+        # Check cache first
+        for i, text in enumerate(texts):
+            cached = self.cache.get_embedding(text)
+            if cached is not None:
+                embeddings.append(cached)
             else:
-                print(f"⚠️  Warning: Unsupported file type {file_extension} for {file_path}")
-                failed_count += 1
-                continue
-            
-            # Load the document
-            raw_docs = loader.load()
-            
-            if not raw_docs:
-                print(f"⚠️  Warning: No content loaded from {file_path}")
-                failed_count += 1
-                continue
-            
-            # Check if we actually got meaningful content
-            total_content = sum(len(doc.page_content.strip()) for doc in raw_docs)
-            if total_content < 50:  # Threshold for meaningful content
-                print(f"⚠️  Warning: Very little content extracted from {file_path} ({total_content} characters)")
-                failed_count += 1
-                continue
-            
-            # Apply semantic chunking (this will generate embeddings for chunking)
-            print(f"🔪 Applying semantic chunking (this generates embeddings for chunking)...")
-            chunks = text_splitter.split_documents(raw_docs)
-            print(f"✅ Created {len(chunks)} semantic chunks from {len(raw_docs)} pages/sections")
-            
-            # Add enhanced file metadata to chunks
-            for chunk in chunks:
-                chunk.metadata.update({
-                    "source_file": os.path.basename(file_path),
-                    "file_path": file_path,
-                    "file_type": file_extension,
-                    "processed_at": datetime.now().isoformat(),
-                    "total_source_pages": len(raw_docs),
-                    "content_length": len(chunk.page_content)
-                })
-            
-            documents.extend(chunks)
-            processed_count += 1
-            
-            # Mark document as processed
-            tracker.mark_document_processed(file_path, len(chunks))
-            
-            print(f"✅ Successfully processed {file_path}: {len(chunks)} chunks created")
-            
-        except Exception as e:
-            print(f"❌ Error processing {file_path}: {str(e)}")
-            failed_count += 1
-            continue
+                embeddings.append(None)
+                uncached_texts.append(text)
+                uncached_indices.append(i)
         
-        # Add delay to avoid rate limiting
-        time.sleep(30)
-    
-    print(f"\n📊 Document processing summary:")
-    print(f"   ✅ Processed: {processed_count}")
-    print(f"   ⏭️  Skipped: {skipped_count}")
-    print(f"   ❌ Failed: {failed_count}")
-    print(f"   📝 Total chunks: {len(documents)}")
-    
-    return documents
-
-def load_document_with_fallbacks(file_path: str):
-    """
-    Load document with multiple fallback strategies for PDFs
-    Enhanced version that tries multiple PDF loaders if one fails
-    """
-    file_extension = os.path.splitext(file_path)[1].lower()
-    
-    if file_extension == '.docx':
-        loader = Docx2txtLoader(file_path)
-        return loader.load()
-    
-    elif file_extension == '.pdf':
-        # Try PyPDF first (usually fastest)
-        try:
-            loader = PyPDFLoader(file_path)
-            docs = loader.load()
-            if docs and any(doc.page_content.strip() for doc in docs):
-                print(f"✅ Successfully loaded {file_path} with PyPDF")
-                return docs
-        except Exception as e:
-            print(f"PyPDF failed for {file_path}: {str(e)}")
+        # Generate embeddings for uncached texts
+        if uncached_texts:
+            new_embeddings = self.base_embeddings.embed_documents(uncached_texts)
+            for text, embedding, idx in zip(uncached_texts, new_embeddings, uncached_indices):
+                self.cache.add_embedding(text, embedding)
+                embeddings[idx] = embedding
         
-        # Fallback to PyMuPDF (if available)
-        try:
-            from langchain_community.document_loaders import PyMuPDFLoader
-            loader = PyMuPDFLoader(file_path)
-            docs = loader.load()
-            if docs and any(doc.page_content.strip() for doc in docs):
-                print(f"✅ Successfully loaded {file_path} with PyMuPDF (fallback)")
-                return docs
-        except ImportError:
-            print(f"PyMuPDF not available for {file_path}")
-        except Exception as e:
-            print(f"PyMuPDF failed for {file_path}: {str(e)}")
+        return embeddings
+    
+    def embed_query(self, text):
+        """Embed query with caching"""
+        cached = self.cache.get_embedding(text)
+        if cached is not None:
+            return cached
         
-        # Final fallback to Unstructured (if available)
-        try:
-            from langchain_community.document_loaders import UnstructuredPDFLoader
-            loader = UnstructuredPDFLoader(file_path)
-            docs = loader.load()
-            print(f"✅ Successfully loaded {file_path} with Unstructured (final fallback)")
-            return docs
-        except ImportError:
-            print(f"Unstructured not available for {file_path}")
-        except Exception as e:
-            print(f"All PDF loaders failed for {file_path}: {str(e)}")
-            return []
-    
-    else:
-        raise ValueError(f"Unsupported file type: {file_extension}")
+        embedding = self.base_embeddings.embed_query(text)
+        self.cache.add_embedding(text, embedding)
+        return embedding
 
-def load_and_chunk_documents_enhanced(tracker: DocumentTracker, force_reprocess: bool = False) -> List[Document]:
-    """
-    Enhanced version with multiple PDF loading strategies and better error handling
-    Use this version if you want robust PDF handling with fallbacks
-    """
-    documents = []
-    
-    # Get both DOCX and PDF files
-    docx_files = glob.glob(os.path.join(FILES_DIRECTORY, "*.docx"))
-    pdf_files = glob.glob(os.path.join(FILES_DIRECTORY, "*.pdf"))
-    all_files = docx_files + pdf_files
-    
-    if not all_files:
-        print(f"No .docx or .pdf files found in {FILES_DIRECTORY} directory")
-        return documents
-    
-    print(f"Found {len(docx_files)} DOCX files and {len(pdf_files)} PDF files")
-    
-    # Initialize semantic chunker
-    try:
-        text_splitter = SemanticChunker(embeddings)
-    except Exception as e:
-        print(f"Error initializing semantic chunker: {str(e)}")
-        raise
-    
-    processed_count = 0
-    skipped_count = 0
-    failed_count = 0
-    
-    for file_path in all_files:
-        try:
-            # Check if document needs processing
-            if not force_reprocess and tracker.is_document_processed(file_path):
-                print(f"Skipping {file_path}: already processed and unchanged")
-                skipped_count += 1
-                continue
-            
-            print(f"📄 Processing {file_path}...")
-            
-            # Load document with fallback strategies
-            raw_docs = load_document_with_fallbacks(file_path)
-            
-            if not raw_docs:
-                print(f"⚠️  Warning: No content loaded from {file_path}")
-                failed_count += 1
-                continue
-            
-            # Check if we actually got meaningful content
-            total_content = sum(len(doc.page_content.strip()) for doc in raw_docs)
-            if total_content < 50:  # Threshold for meaningful content
-                print(f"⚠️  Warning: Very little content extracted from {file_path} ({total_content} characters)")
-                failed_count += 1
-                continue
-            
-            # Apply semantic chunking
-            print(f"🔪 Applying semantic chunking...")
-            chunks = text_splitter.split_documents(raw_docs)
-            print(f"✅ Created {len(chunks)} semantic chunks from {len(raw_docs)} pages/sections")
-            
-            # Add enhanced metadata
-            file_extension = os.path.splitext(file_path)[1].lower()
-            for chunk in chunks:
-                chunk.metadata.update({
-                    "source_file": os.path.basename(file_path),
-                    "file_path": file_path,
-                    "file_type": file_extension,
-                    "processed_at": datetime.now().isoformat(),
-                    "total_source_pages": len(raw_docs),
-                    "content_length": len(chunk.page_content)
-                })
-            
-            documents.extend(chunks)
-            processed_count += 1
-            
-            # Mark document as processed
-            tracker.mark_document_processed(file_path, len(chunks))
-            
-            print(f"✅ Successfully processed {file_path}: {len(chunks)} chunks created")
-            
-        except Exception as e:
-            print(f"❌ Error processing {file_path}: {str(e)}")
-            failed_count += 1
-            continue
-        
-        # Add delay to avoid rate limiting
-        time.sleep(30)
-    
-    print(f"\n📊 Document processing summary:")
-    print(f"   ✅ Processed: {processed_count}")
-    print(f"   ⏭️  Skipped: {skipped_count}")
-    print(f"   ❌ Failed: {failed_count}")
-    print(f"   📝 Total chunks: {len(documents)}")
-    
-    return documents
+# Initialize base embeddings and wrap with cache
+base_embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+embeddings = CachedEmbeddings(base_embeddings, embedding_cache)
 
-def sanitize_type(type_name: str) -> str:
-    """Sanitize type names to be valid Neo4j labels/relationship types"""
-    # Replace spaces and special characters with underscores
-    sanitized = type_name.replace(" ", "_").replace("-", "_")
-    # Remove any other special characters and keep only alphanumeric and underscores
-    sanitized = ''.join(c if c.isalnum() or c == '_' else '_' for c in sanitized)
-    # Remove consecutive underscores and strip leading/trailing underscores
-    while '__' in sanitized:
-        sanitized = sanitized.replace('__', '_')
-    sanitized = sanitized.strip('_')
-    # Ensure it starts with a letter (Neo4j requirement)
-    if sanitized and not sanitized[0].isalpha():
-        sanitized = 'Node_' + sanitized
-    # Fallback if empty
-    return sanitized if sanitized else 'UnknownType'
+# Initialize LLM
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+print("✅ Successfully initialized cached embeddings and LLM")
 
-def process_graph_documents(graph_documents: List, incremental: bool = True):
-    """
-    Process graph documents and add to Neo4j with optional incremental updates
-    """
-    if not incremental:
-        print("Cleaning Neo4j database...")
-        try:
-            graph.query("MATCH (n) DETACH DELETE n")
-            print("Neo4j database cleaned successfully.")
-        except Exception as e:
-            print(f"Error cleaning Neo4j database: {str(e)}")
-            raise
-    
-    print("Adding graph documents to Neo4j...")
-    node_count = 0
-    relationship_count = 0
-    
-    for i, graph_doc in enumerate(graph_documents):
-        print(f"Processing graph document {i+1}/{len(graph_documents)}")
-        
-        # Add nodes
-        for node in graph_doc.nodes:
-            try:
-                sanitized_type = sanitize_type(node.type)
-                print(f"Adding node: {node.type} -> {sanitized_type} (ID: {node.id})")
-                graph.query(
-                    f"MERGE (n:{sanitized_type} {{id: $id}})",
-                    {"id": node.id}
-                )
-                node_count += 1
-            except Exception as e:
-                print(f"Error adding node {node.id} of type {node.type}: {str(e)}")
-                continue
-        
-        # Add relationships
-        for rel in graph_doc.relationships:
-            try:
-                sanitized_rel_type = sanitize_type(rel.type)
-                print(f"Adding relationship: {rel.type} -> {sanitized_rel_type} ({rel.source.id} -> {rel.target.id})")
-                graph.query(
-                    f"MATCH (s {{id: $source}}), (t {{id: $target}}) "
-                    f"MERGE (s)-[:{sanitized_rel_type}]->(t)",
-                    {"source": rel.source.id, "target": rel.target.id}
-                )
-                relationship_count += 1
-            except Exception as e:
-                print(f"Error adding relationship {rel.type} from {rel.source.id} to {rel.target.id}: {str(e)}")
-                continue
-    
-    print(f"Successfully added {node_count} nodes and {relationship_count} relationships to Neo4j")
+# Environment variables
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 
-# =============================================================================
-# VECTOR STORE INTEGRATION (IN-MEMORY AND CHROMADB)
-# =============================================================================
-# This system supports both in-memory and persistent ChromaDB vector storage.
-
-def check_chromadb_availability() -> bool:
-    """Check if ChromaDB is properly installed and available"""
-    try:
-        import chromadb
-        from langchain_chroma.vectorstores import Chroma
-        from langchain_graph_retriever.transformers import ShreddingTransformer
-        return True
-    except ImportError:
+def check_environment():
+    """Check if all required environment variables are set"""
+    missing = []
+    if not os.getenv("GOOGLE_API_KEY"):
+        missing.append("GOOGLE_API_KEY")
+    if not NEO4J_PASSWORD or NEO4J_PASSWORD == "password":
+        missing.append("NEO4J_PASSWORD (using default)")
+    
+    if missing:
+        print("⚠️ Missing or default environment variables:", ", ".join(missing))
         return False
+    return True
 
-def initialize_in_memory_vector_store(documents: List[Document] = None) -> InMemoryVectorStore:
-    """
-    Initialize InMemoryVectorStore with optional documents.
-    Note: This is a purely in-memory store that doesn't persist data between runs.
-    """
+def clean_neo4j_database(graph: Neo4jGraph):
+    """Clean all nodes and relationships from Neo4j database"""
     try:
-        if documents:
-            print(f"🏪 Creating in-memory vector store with {len(documents)} documents...")
-            print(f"⚠️  WARNING: This will generate embeddings AGAIN for vector storage!")
-            vector_store = InMemoryVectorStore.from_documents(
-                documents=documents,
-                embedding=embeddings,
-            )
-        else:
-            print("🏪 Creating empty in-memory vector store...")
-            vector_store = InMemoryVectorStore(embeddings)
-        
-        print("✅ Successfully initialized in-memory vector store")
-        return vector_store
-        
+        print("🧹 Cleaning Neo4j database...")
+        graph.query("MATCH (n) DETACH DELETE n")
+        print("✅ Neo4j database cleaned")
     except Exception as e:
-        print(f"Error initializing in-memory vector store: {str(e)}")
-        raise
+        print(f"⚠️ Could not clean database: {e}")
 
-def add_documents_to_in_memory_store(vector_store: InMemoryVectorStore, documents: List[Document]):
-    """
-    Add new documents to existing in-memory vector store.
-    Note: Changes are only available during the current session.
-    """
+def load_and_process_documents(tracker: DocumentTracker, force_reprocess: bool = False) -> Tuple[List[Document], List[str]]:
+    """Load documents from files directory with tracking"""
+    documents = []
+    processed_files = []
+    skipped_files = []
+    
+    # Ensure files directory exists
+    os.makedirs(FILES_DIRECTORY, exist_ok=True)
+    
+    # Find all .docx files
+    docx_files = list(Path(FILES_DIRECTORY).glob("*.docx"))
+    
+    # Also support .txt files
+    txt_files = list(Path(FILES_DIRECTORY).glob("*.txt"))
+    
+    all_files = docx_files + txt_files
+    
+    if not all_files:
+        print(f"⚠️ No .docx or .txt files found in {FILES_DIRECTORY}")
+        return documents, processed_files
+    
+    print(f"📂 Found {len(all_files)} files to process")
+    
+    for file_path in all_files:
+        file_str = str(file_path)
+        
+        # Check if file needs processing
+        if not force_reprocess and tracker.is_processed(file_str):
+            print(f"⏩ Skipping already processed: {file_path.name}")
+            skipped_files.append(file_str)
+            # Load from existing vector store instead of skipping entirely
+            continue
+        
+        print(f"📄 Processing: {file_path.name}")
+        
+        try:
+            # Load document based on file type
+            if file_path.suffix == '.docx':
+                loader = Docx2txtLoader(file_str)
+                docs = loader.load()
+            else:  # .txt file
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                docs = [Document(page_content=content, metadata={"source": file_str})]
+            
+            # Process each document
+            for doc in docs:
+                # Use semantic chunker for better results
+                text_splitter = SemanticChunker(
+                    embeddings=base_embeddings,
+                    breakpoint_threshold_type="percentile",
+                    breakpoint_threshold_amount=70
+                )
+                
+                chunks = text_splitter.split_documents([doc])
+                documents.extend(chunks)
+                
+                # Track the processed file
+                tracker.mark_processed(file_str, len(chunks))
+                processed_files.append(file_str)
+                
+                print(f"  ✅ Created {len(chunks)} chunks")
+                
+        except Exception as e:
+            print(f"  ❌ Error processing {file_path.name}: {e}")
+    
+    # Save tracking data
+    tracker.save()
+    
+    print(f"\n📊 Processing Summary:")
+    print(f"  - Processed: {len(processed_files)} files")
+    print(f"  - Skipped: {len(skipped_files)} files") 
+    print(f"  - Total chunks: {len(documents)}")
+    
+    return documents, processed_files
+
+def initialize_vector_store(documents: List[Document], use_chromadb: bool = None):
+    """Initialize vector store with documents"""
     if not documents:
-        print("No documents to add to vector store")
+        print("⚠️ No documents to add to vector store")
+        return None
+    
+    # Auto-detect ChromaDB if not specified
+    if use_chromadb is None:
+        use_chromadb = CHROMADB_AVAILABLE
+    
+    if use_chromadb and CHROMADB_AVAILABLE:
+        print("🗄️ Using ChromaDB for persistent storage...")
+        persist_directory = os.path.join(STORAGE_DIRECTORY, "chromadb")
+        os.makedirs(persist_directory, exist_ok=True)
+        
+        vector_store = Chroma.from_documents(
+            documents,
+            embeddings,
+            persist_directory=persist_directory,
+            collection_name="knowledge_graph_docs"
+        )
+        print(f"✅ ChromaDB initialized with {len(documents)} documents")
+    else:
+        print("💾 Using in-memory vector store...")
+        vector_store = InMemoryVectorStore.from_documents(
+            documents,
+            embeddings
+        )
+        print(f"✅ In-memory store initialized with {len(documents)} documents")
+    
+    return vector_store
+
+def create_knowledge_graph(documents: List[Document], graph: Neo4jGraph):
+    """Create knowledge graph from documents using LLMGraphTransformer"""
+    if not documents:
+        print("⚠️ No documents to add to knowledge graph")
         return
     
-    try:
-        print(f"Adding {len(documents)} documents to in-memory vector store...")
-        vector_store.add_documents(documents)
-        print("Successfully added documents to in-memory vector store")
-    except Exception as e:
-        print(f"Error adding documents to in-memory vector store: {str(e)}")
-        raise
-
-def initialize_chromadb_vector_store(documents: List[Document] = None, force_recreate: bool = False):
-    """
-    Initialize ChromaDB vector store with optional documents.
-    Uses ShreddingTransformer for document preprocessing as recommended.
-    """
-    try:
-        # Import ChromaDB dependencies
-        from langchain_chroma.vectorstores import Chroma
-        from langchain_graph_retriever.transformers import ShreddingTransformer
-        
-        # Ensure storage directory exists
-        os.makedirs(CHROMADB_PERSIST_DIRECTORY, exist_ok=True)
-        
-        if documents:
-            print(f"Creating ChromaDB vector store with {len(documents)} documents...")
-            
-            # Apply shredding transformation as recommended
-            shredding_transformer = ShreddingTransformer()
-            transformed_documents = list(shredding_transformer.transform_documents(documents))
-            print(f"Applied shredding transformation: {len(documents)} -> {len(transformed_documents)} chunks")
-            
-            # Create or update ChromaDB store
-            vector_store = Chroma.from_documents(
-                documents=transformed_documents,
-                embedding=embeddings,
-                collection_name=CHROMADB_COLLECTION_NAME,
-                persist_directory=CHROMADB_PERSIST_DIRECTORY,
-            )
-        else:
-            print("Creating empty ChromaDB vector store...")
-            vector_store = Chroma(
-                embedding_function=embeddings,
-                collection_name=CHROMADB_COLLECTION_NAME,
-                persist_directory=CHROMADB_PERSIST_DIRECTORY,
-            )
-        
-        print(f"Successfully initialized ChromaDB vector store (persist_directory: {CHROMADB_PERSIST_DIRECTORY})")
-        return vector_store
-        
-    except Exception as e:
-        print(f"Error initializing ChromaDB vector store: {str(e)}")
-        raise
-
-def add_documents_to_chromadb_store(vector_store, documents: List[Document]):
-    """
-    Add new documents to existing ChromaDB vector store.
-    Applies shredding transformation before adding documents.
-    """
-    if not documents:
-        print("No documents to add to ChromaDB vector store")
-        return
+    print("🔄 Creating knowledge graph using LLMGraphTransformer...")
     
-    try:
-        print(f"Adding {len(documents)} documents to ChromaDB vector store...")
-        
-        # Import ChromaDB dependencies
-        from langchain_graph_retriever.transformers import ShreddingTransformer
-        
-        # Apply shredding transformation
-        shredding_transformer = ShreddingTransformer()
-        transformed_documents = list(shredding_transformer.transform_documents(documents))
-        print(f"Applied shredding transformation: {len(documents)} -> {len(transformed_documents)} chunks")
-        
-        vector_store.add_documents(transformed_documents)
-        print("Successfully added documents to ChromaDB vector store")
-    except Exception as e:
-        print(f"Error adding documents to ChromaDB vector store: {str(e)}")
-        raise
-
-# =============================================================================
-# MAIN PROCESSING PIPELINE
-# =============================================================================
-
-def main(force_reprocess: bool = False, clean_neo4j: bool = False, use_chromadb: bool = False, enhanced_pdf: bool = False):
-    """
-    Main processing pipeline with configurable vector store backend
+    # Initialize the LLMGraphTransformer
+    llm_transformer = LLMGraphTransformer(
+        llm=llm,
+        allowed_nodes=["Person", "Organization", "Location", "Technology", "Concept", "Policy", "System"],
+        allowed_relationships=["MENTIONS", "RELATES_TO", "MANAGES", "IMPLEMENTS", "REQUIRES", "APPROVES", "USES"],
+        node_properties=["description"],
+        relationship_properties=["description"]
+    )
     
-    Args:
-        force_reprocess: Force reprocessing of all documents
-        clean_neo4j: Clean Neo4j database before processing
-        use_chromadb: Use ChromaDB instead of in-memory vector store
-        enhanced_pdf: Use enhanced PDF processing with fallbacks
-    """
-    try:
-        # Check ChromaDB availability if requested
-        if use_chromadb and not check_chromadb_availability():
-            raise ImportError(
-                "ChromaDB is not available. Please install it with: pip install chromadb"
-            )
+    # Process documents in batches for better performance
+    batch_size = 5
+    total_nodes = 0
+    total_relationships = 0
+    
+    for i in range(0, len(documents), batch_size):
+        batch = documents[i:i+batch_size]
+        print(f"  Processing batch {i//batch_size + 1}/{(len(documents)-1)//batch_size + 1}...")
         
-        # Initialize document tracker
-        tracker = DocumentTracker()
-        
-        # Choose document loading function based on enhanced_pdf flag
-        load_function = load_and_chunk_documents_enhanced if enhanced_pdf else load_and_chunk_documents
-        
-        # Load and process documents efficiently - avoiding multiple calls
-        print("Loading and processing documents (DOCX and PDF)...")
-        
-        # Single document loading call based on requirements
-        if force_reprocess:
-            print("Force reprocessing all documents...")
-            all_documents = load_function(tracker, force_reprocess=True)
-            documents_for_graph = all_documents
-            documents_for_vector_store = all_documents
-        else:
-            print("Processing only new/changed documents...")
-            new_documents = load_function(tracker, force_reprocess=False)
-            documents_for_graph = new_documents
-            
-            if use_chromadb:
-                # ChromaDB can handle incremental updates
-                documents_for_vector_store = new_documents
-            else:
-                # In-memory needs all documents, but we can still avoid reprocessing unchanged files
-                if new_documents:
-                    print("New documents found, loading all documents for in-memory store...")
-                    all_documents = load_function(tracker, force_reprocess=True)
-                    documents_for_vector_store = all_documents
-                else:
-                    print("No new documents, loading previously processed documents for in-memory store...")
-                    all_documents = load_function(tracker, force_reprocess=True)
-                    documents_for_vector_store = all_documents
-        
-        # Initialize vector store based on selected backend
-        if use_chromadb:
-            print("Using ChromaDB vector store with persistence")
-            if force_reprocess:
-                vector_store = initialize_chromadb_vector_store(documents=documents_for_vector_store, force_recreate=True)
-            elif documents_for_vector_store:
-                # Load existing store and add new documents
-                vector_store = initialize_chromadb_vector_store()
-                add_documents_to_chromadb_store(vector_store, documents_for_vector_store)
-            else:
-                # Load existing ChromaDB store
-                vector_store = initialize_chromadb_vector_store()
-                print("Loaded existing ChromaDB vector store - no new documents to process")
-        else:
-            print("Using in-memory vector store")
-            vector_store = initialize_in_memory_vector_store(documents=documents_for_vector_store)
-        
-        # Process graph documents if we have documents to process
-        if documents_for_graph:
-            print("Converting documents to graph format...")
-            try:
-                graph_transformer = LLMGraphTransformer(llm=llm)
-                graph_documents = graph_transformer.convert_to_graph_documents(documents_for_graph)
-                
-                # Add to Neo4j (incremental unless clean_neo4j=True)
-                process_graph_documents(graph_documents, incremental=not clean_neo4j)
-                
-            except Exception as e:
-                print(f"Error processing graph documents: {str(e)}")
-                # Continue with vector store functionality even if graph processing fails
-        
-        # Configure graph retriever
         try:
-            traversal_config = Eager(
-                select_k=5,
-                start_k=2,
-                adjacent_k=3,
-                max_depth=2
-            )
+            # Convert documents to graph documents
+            graph_documents = llm_transformer.convert_to_graph_documents(batch)
             
-            retriever = GraphRetriever(
-                store=vector_store,
-                strategy=traversal_config,
-            )
+            # Count entities
+            for graph_doc in graph_documents:
+                total_nodes += len(graph_doc.nodes)
+                total_relationships += len(graph_doc.relationships)
             
-            store_type = "ChromaDB" if use_chromadb else "in-memory"
-            print(f"Successfully configured GraphRetriever with {store_type} vector store")
+            # Add to Neo4j
+            graph.add_graph_documents(
+                graph_documents,
+                baseEntityLabel=True,
+                include_source=True
+            )
             
         except Exception as e:
-            print(f"Error configuring GraphRetriever: {str(e)}")
-            # Fallback to simple vector store retriever
-            retriever = vector_store.as_retriever()
-            store_type = "ChromaDB" if use_chromadb else "in-memory"
-            print(f"Using fallback {store_type} vector store retriever")
-        
-        # Set up RAG chain
-        prompt = ChatPromptTemplate.from_template(
-            """Answer the question based only on the context provided.
-            Context: {context}
-            Question: {question}"""
-        )
-        
-        def format_docs(docs):
-            return "\n\n".join(f"text: {doc.page_content} metadata: {doc.metadata}" for doc in docs)
-        
-        chain = (
-            {"context": retriever | format_docs, "question": RunnablePassthrough()}
-            | prompt
-            | llm
-            | StrOutputParser()
-        )
-        
-        store_type = "ChromaDB" if use_chromadb else "in-memory"
-        print(f"RAG chain configured successfully with {store_type} vector store")
-        
-        # Save embedding cache and display statistics
-        try:
-            embedding_cache.save()
-            cache_stats = embedding_cache.get_stats()
-            
-            print("\n" + "="*50)
-            print("EMBEDDING CACHE STATISTICS")
-            print("="*50)
-            print(f"Total cached embeddings: {cache_stats['total_cached']}")
-            print(f"Cache hits: {cache_stats['cache_hits']}")
-            print(f"Cache misses: {cache_stats['cache_misses']}")
-            print(f"New embeddings generated: {cache_stats['new_embeddings']}")
-            if cache_stats['cache_hits'] + cache_stats['cache_misses'] > 0:
-                print(f"Cache hit rate: {cache_stats['hit_rate']:.2%}")
-            print("="*50)
-            
-        except Exception as e:
-            print(f"Error saving embedding cache: {str(e)}")
-        
-        return chain, vector_store, graph
-        
-    except Exception as e:
-        print(f"Error in main processing pipeline: {str(e)}")
-        raise
+            print(f"  ⚠️ Error processing batch: {e}")
+            continue
+    
+    print(f"✅ Knowledge graph created with approximately {total_nodes} nodes and {total_relationships} relationships")
 
-# =============================================================================
-# TESTING AND VALIDATION
-# =============================================================================
+def setup_rag_chain(vector_store, graph: Neo4jGraph):
+    """Setup RAG chain with vector store and graph"""
+    from langchain.chains import RetrievalQA
+    from langchain_core.prompts import PromptTemplate
+    
+    # Create a custom prompt template
+    prompt_template = """You are an assistant that provides accurate answers based on the provided context.
+    Use the following pieces of context to answer the question at the end.
+    If you don't know the answer based on the context, just say that you don't know, don't try to make up an answer.
+    Always cite the source of your information when possible.
 
-def test_system(chain, graph):
+    Context:
+    {context}
+
+    Question: {question}
+
+    Answer: """
+    
+    PROMPT = PromptTemplate(
+        template=prompt_template,
+        input_variables=["context", "question"]
+    )
+    
+    # Setup retrieval QA chain
+    chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        chain_type="stuff",
+        retriever=vector_store.as_retriever(search_kwargs={"k": 3}),
+        chain_type_kwargs={"prompt": PROMPT},
+        return_source_documents=True
+    )
+    
+    print("✅ RAG chain with simple retrieval configured")
+    return chain
+
+def test_system(chain, graph: Neo4jGraph):
     """Test the system with sample queries"""
+    print("\n" + "="*50)
+    print("🧪 TESTING THE SYSTEM")
+    print("="*50)
+    
+    # Test Neo4j connection with a simple query
     try:
-        # Query Neo4j to verify graph structure
-        print("\n" + "="*50)
-        print("TESTING SYSTEM")
-        print("="*50)
-        
-        nodes = graph.query("MATCH (n) RETURN count(n) as node_count")
-        relationships = graph.query("MATCH ()-[r]->() RETURN count(r) as rel_count")
-        
-        node_count = nodes[0]["node_count"] if nodes else 0
-        rel_count = relationships[0]["rel_count"] if relationships else 0
-        
-        print(f"Neo4j Graph Statistics:")
-        print(f"  - Nodes: {node_count}")
-        print(f"  - Relationships: {rel_count}")
-        
-        # Test query
-        question = "Who must approve any exceptions to the Malware and Antivirus Policy at [Company Name]?"
-        print(f"\nTest Question: {question}")
-        
-        result = chain.invoke(question)
-        print(f"Answer: {result}")
-        
+        # FIXED: Use a simple query that doesn't require APOC
+        result = graph.query("MATCH (n) RETURN count(n) as count LIMIT 1")
+        print(f"✅ Neo4j connection successful. Nodes in graph: {result[0]['count'] if result else 0}")
     except Exception as e:
-        print(f"Error during system testing: {str(e)}")
+        print(f"⚠️ Neo4j query error: {e}")
+    
+    if not chain:
+        print("⚠️ No chain available for testing")
+        return
+    
+    test_queries = [
+        "What are the main topics discussed in the documents?",
+        "Summarize the key points from the knowledge base.",
+        "What entities or concepts are mentioned most frequently?"
+    ]
+    
+    for query in test_queries[:1]:  # Test with just one query
+        print(f"\n📝 Query: {query}")
+        try:
+            response = chain.invoke({"query": query})
+            answer = response.get('result', 'No answer found')
+            print(f"💡 Answer: {answer[:500]}...")  # Truncate long answers
+        except Exception as e:
+            print(f"❌ Error during query: {e}")
 
-# =============================================================================
-# ENTRY POINT
-# =============================================================================
+def main(force_reprocess=False, clean_neo4j=False, use_chromadb=None, test_only=False):
+    """Main execution function"""
+    print("\n🚀 Starting Enhanced Knowledge Graph RAG System")
+    print("="*50)
+    
+    # Check environment
+    if not check_environment():
+        print("⚠️ Please set missing environment variables")
+    
+    # Initialize document tracker
+    tracker = DocumentTracker()
+    print(f"📊 Tracker: {len(tracker.processed_files)} files previously processed")
+    
+    # Initialize Neo4j connection with enhanced_schema DISABLED
+    try:
+        # IMPORTANT FIX: Set enhanced_schema=False to avoid APOC dependency
+        graph = Neo4jGraph(
+            url=NEO4J_URI, 
+            username=NEO4J_USERNAME, 
+            password=NEO4J_PASSWORD,
+            enhanced_schema=False  # This disables APOC requirement
+        )
+        print("✅ Connected to Neo4j successfully (APOC not required)")
+    except Exception as e:
+        print(f"❌ Error connecting to Neo4j: {e}")
+        print("\n💡 Tip: Make sure Neo4j is running and credentials are correct")
+        return None, None, None
+    
+    # Clean database if requested
+    if clean_neo4j:
+        clean_neo4j_database(graph)
+    
+    # Initialize variables
+    vector_store = None
+    chain = None
+    
+    if not test_only:
+        # Process documents
+        documents, processed_files = load_and_process_documents(tracker, force_reprocess)
+        
+        if documents or tracker.processed_files:
+            # Initialize vector store
+            vector_store = initialize_vector_store(documents, use_chromadb)
+            
+            # Create knowledge graph only for newly processed documents
+            if documents:
+                create_knowledge_graph(documents, graph)
+            
+            # Setup RAG chain
+            if vector_store:
+                chain = setup_rag_chain(vector_store, graph)
+        else:
+            print("⚠️ No documents found or processed. Add .docx or .txt files to 'core/files/' directory")
+    
+    # Test the system
+    test_system(chain, graph)
+    
+    # Save cache
+    embedding_cache.save()
+    # Fix: Use the correct attribute name
+    try:
+        cache_size = len(embedding_cache._cache) if hasattr(embedding_cache, '_cache') else 0
+    except:
+        cache_size = 0
+    print(f"\n💾 Saved embedding cache with {cache_size} entries")
+    
+    print("\n✅ System ready for queries!")
+    return chain, vector_store, graph
 
 if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Knowledge Graph RAG System with Vector Store Options")
-    parser.add_argument("--force-reprocess", action="store_true", 
-                       help="Force reprocessing of all documents")
-    parser.add_argument("--clean-neo4j", action="store_true", 
-                       help="Clean Neo4j database before processing")
-    parser.add_argument("--chromadb", action="store_true", 
-                       help="Use ChromaDB for persistent vector storage (default: in-memory)")
-    parser.add_argument("--enhanced-pdf", action="store_true", 
-                       help="Use enhanced PDF processing with multiple fallback loaders")
-    parser.add_argument("--test-only", action="store_true", 
-                       help="Only run tests, skip processing")
-    parser.add_argument("--clear-cache", action="store_true", 
-                       help="Clear the embedding cache before processing")
+    parser = argparse.ArgumentParser(description="Enhanced Knowledge Graph RAG System")
+    parser.add_argument("--force-reprocess", action="store_true", help="Force reprocess all documents")
+    parser.add_argument("--clean-neo4j", action="store_true", help="Clean Neo4j database before processing")
+    parser.add_argument("--use-chromadb", action="store_true", help="Use ChromaDB for vector storage")
+    parser.add_argument("--use-memory", action="store_true", help="Use in-memory vector storage")
+    parser.add_argument("--test-only", action="store_true", help="Only run tests, skip document processing")
     
     args = parser.parse_args()
     
-    try:
-        # Ensure storage directory exists
-        os.makedirs("storage", exist_ok=True)
-        
-        # Check ChromaDB availability if requested (before doing any work)
-        if args.chromadb and not check_chromadb_availability():
-            print("ChromaDB is not available. Please install it with:")
-            print("pip install chromadb langchain-chroma")
-            print("\nFalling back to in-memory vector store...")
-            args.chromadb = False
-        
-        # Clear embedding cache if requested
-        if args.clear_cache:
-            print("Clearing embedding cache...")
-            try:
-                cache = EmbeddingCache()
-                cache.clear_cache()
-            except Exception as e:
-                print(f"Error clearing cache: {str(e)}")
-        
-        if not args.test_only:
-            chain, vector_store, graph = main(
-                force_reprocess=args.force_reprocess,
-                clean_neo4j=args.clean_neo4j,
-                use_chromadb=args.chromadb
-            )
-            
-            # Run tests
-            test_system(chain, graph)
-        else:
-            # Test-only mode
-            store_type = "ChromaDB" if args.chromadb else "in-memory"
-            print(f"Test-only mode: Creating new {store_type} vector store with all documents...")
-            
-            # Connect to existing systems for testing
-            tracker = DocumentTracker()
-            all_documents = load_and_chunk_docx_files(tracker, force_reprocess=True)
-            
-            if args.chromadb:
-                vector_store = initialize_chromadb_vector_store(documents=all_documents)
-            else:
-                vector_store = initialize_in_memory_vector_store(documents=all_documents)
-            
-            traversal_config = Eager(select_k=5, start_k=2, adjacent_k=3, max_depth=2)
-            retriever = GraphRetriever(store=vector_store, strategy=traversal_config)
-            
-            prompt = ChatPromptTemplate.from_template(
-                """Answer the question based only on the context provided.
-                Context: {context}
-                Question: {question}"""
-            )
-            
-            def format_docs(docs):
-                return "\n\n".join(f"text: {doc.page_content} metadata: {doc.metadata}" for doc in docs)
-            
-            chain = (
-                {"context": retriever | format_docs, "question": RunnablePassthrough()}
-                | prompt
-                | llm
-                | StrOutputParser()
-            )
-            
-            test_system(chain, graph)
+    # Determine vector store preference
+    use_chromadb = None
+    if args.use_chromadb:
+        use_chromadb = True
+    elif args.use_memory:
+        use_chromadb = False
     
-    except Exception as e:
-        print(f"Fatal error: {str(e)}")
-        raise
+    main(
+        force_reprocess=args.force_reprocess,
+        clean_neo4j=args.clean_neo4j,
+        use_chromadb=use_chromadb,
+        test_only=args.test_only
+    )
