@@ -332,7 +332,7 @@ async function handleFileSelect(event) {
 }
 
 /**
- * Handles generating a literature review using GraphRAG
+ * Handles generating a literature review using enhanced methodology
  */
 async function handleGenerateReview(event) {
     event.preventDefault();
@@ -350,78 +350,228 @@ async function handleGenerateReview(event) {
     draftVersionControls.innerHTML = '';
     draftHistory = [];
 
-    setLoading(true, 'Generating literature review...');
+    setLoading(true, 'Initializing enhanced literature review generation...');
 
     try {
-        const reviewLengthInput = document.querySelector('input[name="review-length"]:checked');
-        const reviewLength = reviewLengthInput ? reviewLengthInput.value : 'detailed';
+        // Get review settings
+        const reviewTypeInput = document.querySelector('input[name="review-type"]:checked');
+        const reviewDepthInput = document.querySelector('input[name="review-depth"]:checked');
         
-        let prompt = '';
-        if (reviewLength === 'detailed') {
-            prompt = `Generate a comprehensive literature review on the topic: "${topic}". 
-                     Structure it with:
-                     1. Introduction (define the topic and scope)
-                     2. Main body sections (compare and contrast the sources, identify themes)
-                     3. Conclusion (summarize key findings and gaps)
-                     Use academic writing style and include proper citations.`;
-        } else {
-            prompt = `Generate a concise literature review (1-2 paragraphs) on the topic: "${topic}". 
-                     Compare and contrast the key findings from the sources and include citations.`;
-        }
+        const reviewType = reviewTypeInput ? reviewTypeInput.value : 'systematic';
+        const reviewDepth = reviewDepthInput ? reviewDepthInput.value : 'comprehensive';
 
-        addProgressLog('<strong>Step 1:</strong> Querying GraphRAG system...');
-        
-        const result = await apiCall('/query', 'POST', {
-            question: prompt
+        addProgressLog('<strong>Phase 1:</strong> Initializing enhanced GraphRAG literature review system...');
+        updatePhaseIndicator('Scoping and Question Development', 15);
+
+        const result = await apiCall('/generate_enhanced_review', 'POST', {
+            topic: topic,
+            review_type: reviewType,
+            depth: reviewDepth
         });
 
-        addProgressLog('<strong>Step 2:</strong> Literature review generated!');
+        // Process the multi-phase results
+        if (result.process && result.process.phases) {
+            await processReviewPhases(result.process.phases);
+        }
+
+        // Display final review
+        const finalReview = result.final_review || 'Review generation completed but no content received.';
+        draftHistory.push(finalReview);
+        reviewDraftOutput.innerHTML = finalReview.replace(/\n/g, '<br>');
         
-        const draft = result.answer;
-        draftHistory.push(draft);
-        reviewDraftOutput.innerHTML = draft.replace(/\n/g, '<br>');
-        
-        renderDraftViewer();
+        renderEnhancedDraftViewer(result.process);
 
         // Copy to writing assistant
-        writingEditor.innerHTML = draft.replace(/\n/g, '<br>');
+        writingEditor.innerHTML = finalReview.replace(/\n/g, '<br>');
         writingAssistantSection.classList.remove('hidden');
 
-        addProgressLog('<strong>Complete!</strong> Review ready for editing in Writing Assistant.');
+        addProgressLog('<strong>Complete!</strong> Enhanced literature review ready for editing.');
+        updatePhaseIndicator('Review Complete', 100);
+
+        // Show refinement controls
+        document.getElementById('section-refinement-controls').classList.remove('hidden');
 
     } catch (error) {
-        console.error('Error generating review:', error);
+        console.error('Error generating enhanced review:', error);
         addProgressLog(`❌ Error: ${error.message}`);
-        alert('Error generating literature review.');
+        alert('Error generating enhanced literature review.');
+        updatePhaseIndicator('Error Occurred', 0);
     } finally {
         setLoading(false);
     }
 }
 
-function addProgressLog(html) {
-    reviewProgressLog.innerHTML += `<div class="log-entry">${html}</div>`;
-    reviewProgressLog.scrollTop = reviewProgressLog.scrollHeight;
+/**
+ * Process the different phases of literature review generation
+ */
+async function processReviewPhases(phases) {
+    const phaseNames = {
+        'Scoping': 'Scoping and Question Development',
+        'Literature Search': 'Comprehensive Literature Search', 
+        'Critical Analysis': 'Critical Analysis and Theme Identification',
+        'Synthesis': 'Synthesis and Framework Development',
+        'Academic Writing': 'Academic Writing (5 C\'s Framework)',
+        'Refinement': 'Iterative Refinement and Quality Assurance'
+    };
+
+    const progressPercentages = [15, 30, 50, 70, 85, 100];
+
+    for (let i = 0; i < phases.length; i++) {
+        const phase = phases[i];
+        const phaseName = phaseNames[phase.phase] || phase.phase;
+        const progress = progressPercentages[i] || (i + 1) * 16;
+
+        updatePhaseIndicator(phaseName, progress);
+        addProgressLog(`<strong>${phase.phase}:</strong> ${getPhaseDescription(phase.phase)}`);
+
+        // Add phase-specific information
+        if (phase.phase === 'Scoping' && phase.research_questions) {
+            addProgressLog(`📋 Research Questions Identified: ${phase.research_questions.length}`);
+            phase.research_questions.forEach((rq, idx) => {
+                addProgressLog(`   ${idx + 1}. ${rq.question}`);
+            });
+        }
+
+        if (phase.phase === 'Literature Search' && phase.sources_found) {
+            addProgressLog(`📚 Sources Found: ${phase.sources_found}`);
+            if (phase.sources_by_type) {
+                Object.entries(phase.sources_by_type).forEach(([type, count]) => {
+                    addProgressLog(`   - ${type}: ${count}`);
+                });
+            }
+        }
+
+        if (phase.phase === 'Critical Analysis' && phase.themes_identified) {
+            addProgressLog(`🔍 Themes Identified: ${phase.themes_identified}`);
+            if (phase.major_themes) {
+                phase.major_themes.forEach(theme => {
+                    addProgressLog(`   - ${theme}`);
+                });
+            }
+        }
+
+        if (phase.phase === 'Academic Writing' && phase.sections_written) {
+            addProgressLog(`✍️ Sections Written: ${phase.sections_written}`);
+            addProgressLog(`📊 Total Word Count: ${phase.total_word_count || 'N/A'}`);
+            addProgressLog(`🎯 Writing Framework: ${phase.writing_principles?.join(', ') || '5 C\'s'}`);
+        }
+
+        // Simulate processing time
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
 }
 
 /**
- * Renders the draft history buttons
+ * Get description for each phase
  */
-function renderDraftViewer() {
-    draftVersionControls.innerHTML = '';
-    if (draftHistory.length === 0) return;
+function getPhaseDescription(phase) {
+    const descriptions = {
+        'Scoping': 'Defining research questions and search strategy',
+        'Literature Search': 'Identifying and gathering relevant sources',
+        'Critical Analysis': 'Analyzing themes, patterns, and debates',
+        'Synthesis': 'Developing conceptual framework and connections',
+        'Academic Writing': 'Writing sections using the 5 C\'s framework',
+        'Refinement': 'Quality assessment and iterative improvement'
+    };
+    return descriptions[phase] || 'Processing...';
+}
 
-    draftHistory.forEach((_, index) => {
+/**
+ * Update the phase indicator
+ */
+function updatePhaseIndicator(phaseName, percentage) {
+    const phaseText = document.getElementById('current-phase-text');
+    const progressFill = document.getElementById('phase-progress-fill');
+    
+    if (phaseText) phaseText.textContent = phaseName;
+    if (progressFill) progressFill.style.width = `${percentage}%`;
+}
+
+/**
+ * Render enhanced draft viewer with section navigation
+ */
+function renderEnhancedDraftViewer(process) {
+    draftVersionControls.innerHTML = '';
+    
+    if (!process || !process.phases) return;
+
+    // Create navigation for different sections
+    const sections = ['Introduction', 'Methodology', 'Themes', 'Analysis', 'Synthesis', 'Conclusion'];
+    
+    sections.forEach((section, index) => {
         const button = document.createElement('button');
         button.className = 'version-button';
-        button.dataset.index = index.toString();
-        button.textContent = index === 0 ? 'Draft' : `Version ${index + 1}`;
+        button.dataset.section = section.toLowerCase();
+        button.textContent = section;
         
-        if (index === draftHistory.length - 1) {
+        if (index === 0) {
             button.classList.add('active');
         }
         
+        button.addEventListener('click', () => {
+            // Remove active class from all buttons
+            draftVersionControls.querySelectorAll('.version-button').forEach(btn => 
+                btn.classList.remove('active'));
+            // Add active class to clicked button
+            button.classList.add('active');
+            
+            // Show section-specific content
+            showSectionContent(section.toLowerCase());
+        });
+        
         draftVersionControls.appendChild(button);
     });
+}
+
+/**
+ * Show content for a specific section
+ */
+function showSectionContent(sectionName) {
+    // This would show different parts of the literature review
+    // For now, show the full review
+    const fullContent = draftHistory[0] || 'No content available';
+    reviewDraftOutput.innerHTML = fullContent.replace(/\n/g, '<br>');
+}
+
+/**
+ * Handle section refinement
+ */
+async function handleSectionRefinement(refinementType) {
+    const currentSection = reviewDraftOutput.innerHTML;
+    const feedback = document.getElementById('refinement-feedback').value.trim();
+    
+    if (!currentSection) {
+        alert('No section content to refine.');
+        return;
+    }
+
+    setLoading(true, `Applying ${refinementType} refinement...`);
+
+    try {
+        const result = await apiCall('/refine_review_section', 'POST', {
+            section_content: currentSection.replace(/<br>/g, '\n'),
+            refinement_type: refinementType,
+            feedback: feedback
+        });
+
+        // Update the displayed content
+        reviewDraftOutput.innerHTML = result.refined_section.replace(/\n/g, '<br>');
+        
+        // Update the writing assistant
+        writingEditor.innerHTML = result.refined_section.replace(/\n/g, '<br>');
+        
+        // Clear feedback
+        document.getElementById('refinement-feedback').value = '';
+        
+        addProgressLog(`<strong>Refinement Applied:</strong> ${refinementType}`);
+        addProgressLog(`📈 Improvements: ${Object.values(result.improvements_made || {}).join(', ')}`);
+
+    } catch (error) {
+        console.error('Error refining section:', error);
+        alert(`Error applying refinement: ${error.message}`);
+    } finally {
+        setLoading(false);
+    }
 }
 
 /**

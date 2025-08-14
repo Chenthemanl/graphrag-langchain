@@ -1,17 +1,17 @@
 {
   "documents": {
-    "/Users/vaibhavagarwal/Desktop/dev/wolfia/core/files/Cloud Computing Adoption Security Policy.docx": {
-      "hash": "e9751f63eec3e4c798499401fb36686453f7b8c08fa688b883f821963c974e1e",
-      "processed_at": "2025-06-15T20:14:36.694078",
-      "chunk_count": 3,
-      "file_size": 261344
+    "/Users/Chen/Desktop/projects/article-analyzer/graphrag-langchain/core/files/A narrative approach to strengthening child and family relationships_25_08_08_21_24_42.pdf": {
+      "hash": "2ab5acc0679130b17a6479cd899e0e2ebbcf348c748b2e375ceb171a7d4cc800",
+      "processed_at": "2025-08-13T10:05:15.150568",
+      "chunks": 115,
+      "file_size": 148810
     },
-    "/Users/vaibhavagarwal/Desktop/dev/wolfia/core/files/Malware and Antivirus Policy.docx": {
-      "hash": "a2f2573f211d4c58553981f79f3d162799aa0a4558c08d799e9aa400d289103b",
-      "processed_at": "2025-06-15T20:15:06.827409",
-      "chunk_count": 3,
-      "file_size": 25086
+    "/Users/Chen/Desktop/projects/article-analyzer/graphrag-langchain/core/files/hall-2010-narrative-methods-in-a-study-of-trauma-recovery.pdf": {
+      "hash": "790fda48cad271b356c6baeed780ae0db681f83c93fd5635b487fbe0366c3ca9",
+      "processed_at": "2025-08-13T10:05:32.770109",
+      "chunks": 283,
+      "file_size": 121028
     }
   },
-  "last_updated": "2025-06-15T20:15:06.827417"
+  "last_updated": "2025-08-13T10:05:32.770148"
 }

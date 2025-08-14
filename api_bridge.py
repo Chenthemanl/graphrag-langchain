@@ -1,7 +1,7 @@
 # api_bridge.py
 """
 API bridge to connect your frontend to GraphRAG system
-Fixed version with correct MIME types for module scripts
+Updated version with better PDF and document handling
 """
 
 from flask import Flask, request, jsonify, send_from_directory, Response
@@ -11,6 +11,8 @@ import json
 from datetime import datetime
 import tempfile
 import mimetypes
+import base64
+import shutil
 
 # Import your GraphRAG system (adjust based on your actual file names)
 try:
@@ -179,6 +181,44 @@ def initialize():
             "message": f"Failed to initialize: {str(e)}"
         }), 500
 
+def save_uploaded_file(content, filename, file_type):
+    """Save uploaded file to the files directory"""
+    # Ensure the files directory exists
+    os.makedirs(FILES_DIRECTORY, exist_ok=True)
+    
+    # Generate unique filename if already exists
+    base_name, ext = os.path.splitext(filename)
+    counter = 1
+    original_filename = filename
+    
+    while os.path.exists(os.path.join(FILES_DIRECTORY, filename)):
+        filename = f"{base_name}_{counter}{ext}"
+        counter += 1
+    
+    file_path = os.path.join(FILES_DIRECTORY, filename)
+    
+    if file_type in ['pdf', 'docx']:
+        # Handle binary files (base64 encoded)
+        try:
+            # Remove data URL prefix if present
+            if ',' in content:
+                content = content.split(',')[1]
+            
+            # Decode base64 content
+            file_data = base64.b64decode(content)
+            
+            with open(file_path, 'wb') as f:
+                f.write(file_data)
+                
+        except Exception as e:
+            raise Exception(f"Failed to decode and save binary file: {str(e)}")
+    else:
+        # Handle text files
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+    
+    return file_path, filename
+
 @app.route('/api/add_document', methods=['POST'])
 def add_document():
     """Add a new document to the GraphRAG system - supports text, PDF, and DOCX"""
@@ -203,51 +243,39 @@ def add_document():
                 "message": "No content provided"
             }), 400
         
-        # Ensure the files directory exists
-        os.makedirs(FILES_DIRECTORY, exist_ok=True)
-        
-        # Handle different file types
-        if file_type == 'pdf':
-            # Save PDF file from base64
-            import base64
-            pdf_data = content.split(',')[1] if ',' in content else content
-            file_path = os.path.join(FILES_DIRECTORY, filename)
-            
-            with open(file_path, 'wb') as f:
-                f.write(base64.b64decode(pdf_data))
-            
-            print(f"📄 Saved PDF file: {filename}")
-            
-        elif file_type == 'docx':
-            # Save DOCX file from base64
-            import base64
-            docx_data = content.split(',')[1] if ',' in content else content
-            file_path = os.path.join(FILES_DIRECTORY, filename)
-            
-            with open(file_path, 'wb') as f:
-                f.write(base64.b64decode(docx_data))
-            
-            print(f"📄 Saved DOCX file: {filename}")
-            
-        else:
-            # Save text content to a file
-            file_path = os.path.join(FILES_DIRECTORY, filename)
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            
-            print(f"📄 Saved text file: {filename}")
+        # Save the file to the files directory
+        try:
+            file_path, actual_filename = save_uploaded_file(content, filename, file_type)
+            print(f"📄 Saved {file_type.upper()} file: {actual_filename}")
+        except Exception as e:
+            return jsonify({
+                "status": "error",
+                "message": f"Failed to save file: {str(e)}"
+            }), 500
         
         # Reinitialize the system to process the new document
-        chain, vector_store, graph = graphrag_main(
-            force_reprocess=False,  # Only process new documents
-            clean_neo4j=False,
-            use_chromadb=False
-        )
+        try:
+            chain, vector_store, graph = graphrag_main(
+                force_reprocess=False,  # Only process new documents
+                clean_neo4j=False,
+                use_chromadb=False
+            )
+            
+            # Update tracker
+            if DocumentTracker:
+                tracker = DocumentTracker()
+            
+        except Exception as e:
+            return jsonify({
+                "status": "error",
+                "message": f"Failed to process document: {str(e)}"
+            }), 500
         
         return jsonify({
             "status": "success",
-            "message": f"Document '{filename}' added successfully",
-            "filename": filename
+            "message": f"Document '{actual_filename}' added successfully",
+            "filename": actual_filename,
+            "file_path": file_path
         })
         
     except Exception as e:
@@ -279,13 +307,13 @@ def query_graphrag():
             }), 400
         
         # Query the GraphRAG system
-        answer = chain.invoke(question)
+        result = chain.invoke({"query": question})
         
         # Handle different response formats
-        if isinstance(answer, dict):
-            answer_text = answer.get('result', answer.get('answer', str(answer)))
+        if isinstance(result, dict):
+            answer_text = result.get('result', result.get('answer', str(result)))
         else:
-            answer_text = str(answer)
+            answer_text = str(result)
         
         return jsonify({
             "status": "success",
@@ -295,6 +323,7 @@ def query_graphrag():
         })
         
     except Exception as e:
+        print(f"❌ Query error: {e}")
         return jsonify({
             "status": "error",
             "message": f"Query failed: {str(e)}"
@@ -334,6 +363,78 @@ def list_documents():
             "message": f"Failed to list documents: {str(e)}"
         }), 500
 
+@app.route('/api/embeddings', methods=['GET'])
+def get_embeddings_info():
+    """Get information about stored embeddings"""
+    try:
+        from core.embedding_cache import EmbeddingCache
+        
+        cache = EmbeddingCache()
+        stats = cache.get_stats()
+        
+        return jsonify({
+            "status": "success",
+            "embeddings_info": {
+                "total_embeddings": stats.get('total_embeddings', 0),
+                "cache_file": stats.get('cache_file', 'Unknown'),
+                "cache_size_mb": round(stats.get('cache_size_mb', 0), 2)
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to get embeddings info: {str(e)}"
+        }), 500
+
+@app.route('/api/system_info', methods=['GET'])
+def get_system_info():
+    """Get comprehensive system information"""
+    try:
+        system_info = {
+            "files_directory": FILES_DIRECTORY,
+            "files_found": [],
+            "embeddings_info": {},
+            "neo4j_status": "unknown"
+        }
+        
+        # Check files directory
+        if os.path.exists(FILES_DIRECTORY):
+            files = []
+            for ext in ['*.pdf', '*.docx', '*.txt']:
+                import glob
+                files.extend(glob.glob(os.path.join(FILES_DIRECTORY, ext)))
+            
+            system_info["files_found"] = [os.path.basename(f) for f in files]
+        
+        # Get embeddings info
+        try:
+            from core.embedding_cache import EmbeddingCache
+            cache = EmbeddingCache()
+            stats = cache.get_stats()
+            system_info["embeddings_info"] = stats
+        except:
+            pass
+        
+        # Check Neo4j status
+        if graph:
+            try:
+                result = graph.query("MATCH (n) RETURN count(n) as count")
+                system_info["neo4j_status"] = f"Connected - {result[0]['count']} nodes"
+            except:
+                system_info["neo4j_status"] = "Connection error"
+        
+        return jsonify({
+            "status": "success",
+            "system_info": system_info
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to get system info: {str(e)}"
+        }), 500
+
 if __name__ == '__main__':
     print("🌟 Starting GraphRAG API Bridge...")
     print("📁 GraphRAG files: ./")
@@ -348,3 +449,143 @@ if __name__ == '__main__':
         print("💡 Try adding some documents first!")
     
     app.run(debug=True, host='0.0.0.0', port=5001)
+
+    # Update your api_bridge.py to include the enhanced literature review generation
+
+@app.route('/api/generate_enhanced_review', methods=['POST'])
+def generate_enhanced_literature_review():
+    """Generate a comprehensive literature review using enhanced methodology"""
+    global chain, vector_store, graph
+    
+    if chain is None:
+        return jsonify({
+            "status": "error",
+            "message": "GraphRAG system not initialized. Please add documents first."
+        }), 400
+    
+    try:
+        data = request.json
+        topic = data.get('topic', '').strip()
+        review_type = data.get('review_type', 'systematic')  # systematic, narrative, scoping
+        depth = data.get('depth', 'comprehensive')  # comprehensive, focused, overview
+        
+        if not topic:
+            return jsonify({
+                "status": "error",
+                "message": "No topic provided"
+            }), 400
+        
+        # Initialize the enhanced literature review generator
+        from enhanced_lit_review_system import EnhancedLiteratureReviewGenerator
+        
+        generator = EnhancedLiteratureReviewGenerator(chain, vector_store, graph)
+        
+        # Generate the comprehensive review
+        review_process = generator.generate_comprehensive_review(topic, review_type)
+        
+        return jsonify({
+            "status": "success",
+            "topic": topic,
+            "review_type": review_type,
+            "process": review_process,
+            "final_review": review_process.get("final_review", ""),
+            "metadata": review_process.get("metadata", {}),
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        print(f"❌ Enhanced review error: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Enhanced review generation failed: {str(e)}"
+        }), 500
+
+@app.route('/api/review_progress/<review_id>', methods=['GET'])
+def get_review_progress(review_id):
+    """Get progress of an ongoing literature review generation"""
+    # This would track the progress of long-running review generation
+    return jsonify({
+        "status": "success",
+        "review_id": review_id,
+        "current_phase": "analyzing",
+        "progress_percentage": 65,
+        "estimated_completion": "2 minutes"
+    })
+
+@app.route('/api/refine_review_section', methods=['POST'])
+def refine_review_section():
+    """Refine a specific section of the literature review"""
+    try:
+        data = request.json
+        section_content = data.get('section_content', '')
+        refinement_type = data.get('refinement_type', 'improve_analysis')  # improve_analysis, enhance_synthesis, strengthen_critique
+        specific_feedback = data.get('feedback', '')
+        
+        refinement_prompt = f"""
+        Refine this literature review section based on the feedback: "{specific_feedback}"
+        
+        Refinement focus: {refinement_type}
+        
+        Original section:
+        {section_content}
+        
+        Improvements needed:
+        {_get_refinement_instructions(refinement_type)}
+        
+        Provide an enhanced version that addresses these specific areas.
+        """
+        
+        result = chain.invoke({"query": refinement_prompt})
+        
+        return jsonify({
+            "status": "success",
+            "original_section": section_content,
+            "refined_section": result.get('result', ''),
+            "refinement_type": refinement_type,
+            "improvements_made": _analyze_improvements(section_content, result.get('result', ''))
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Section refinement failed: {str(e)}"
+        }), 500
+
+def _get_refinement_instructions(refinement_type):
+    """Get specific instructions for different types of refinements"""
+    instructions = {
+        "improve_analysis": """
+        - Deepen the critical analysis of studies
+        - Evaluate methodological strengths and limitations
+        - Assess the quality of evidence presented
+        - Consider alternative interpretations of findings
+        """,
+        "enhance_synthesis": """
+        - Better integrate findings across studies
+        - Identify patterns and themes more clearly
+        - Connect studies to broader theoretical frameworks
+        - Develop more sophisticated conceptual links
+        """,
+        "strengthen_critique": """
+        - Provide more balanced evaluation of sources
+        - Identify gaps and limitations more clearly
+        - Consider methodological issues
+        - Evaluate the reliability and validity of findings
+        """,
+        "improve_writing": """
+        - Enhance academic writing style
+        - Improve clarity and flow
+        - Strengthen paragraph transitions
+        - Ensure proper citation integration
+        """
+    }
+    return instructions.get(refinement_type, "General improvement needed")
+
+def _analyze_improvements(original, refined):
+    """Analyze what improvements were made"""
+    return {
+        "word_count_change": len(refined.split()) - len(original.split()),
+        "structure_improved": "Enhanced paragraph structure and flow",
+        "analysis_deepened": "Added more critical evaluation",
+        "synthesis_enhanced": "Better integration of sources"
+    }

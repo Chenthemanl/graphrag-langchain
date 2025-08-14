@@ -41,38 +41,76 @@
             </div>
         </section>
 
-        <!-- Step 2: Generate Literature Review -->
+<!-- Step 2: Generate Literature Review -->
         <section id="literature-review-section" class="card hidden">
             <h2 class="card-title">2. Generate Literature Review</h2>
-            <p class="section-description">Provide a topic, and the Deep Researcher will generate a draft by iteratively querying the knowledge base.</p>
+            <p class="section-description">Choose your review methodology and generate a comprehensive, academically rigorous literature review.</p>
             <form id="review-form">
-                 <div class="review-options">
-                    <span class="review-options-label">Review Length:</span>
-                    <label for="review-detailed">
-                        <input type="radio" id="review-detailed" name="review-length" value="detailed" checked>
-                        Detailed
-                    </label>
-                    <label for="review-concise">
-                        <input type="radio" id="review-concise" name="review-length" value="concise">
-                        Concise
-                    </label>
+                 <div class="review-options-group">
+                    <div class="review-options">
+                        <span class="review-options-label">Review Type:</span>
+                        <label for="review-systematic">
+                            <input type="radio" id="review-systematic" name="review-type" value="systematic" checked>
+                            Systematic
+                        </label>
+                        <label for="review-narrative">
+                            <input type="radio" id="review-narrative" name="review-type" value="narrative">
+                            Narrative
+                        </label>
+                        <label for="review-scoping">
+                            <input type="radio" id="review-scoping" name="review-type" value="scoping">
+                            Scoping
+                        </label>
+                    </div>
+                    <div class="review-options">
+                        <span class="review-options-label">Review Depth:</span>
+                        <label for="review-comprehensive">
+                            <input type="radio" id="review-comprehensive" name="review-depth" value="comprehensive" checked>
+                            Comprehensive
+                        </label>
+                        <label for="review-focused">
+                            <input type="radio" id="review-focused" name="review-depth" value="focused">
+                            Focused
+                        </label>
+                        <label for="review-overview">
+                            <input type="radio" id="review-overview" name="review-depth" value="overview">
+                            Overview
+                        </label>
+                    </div>
                 </div>
                 <div class="review-input-group">
                     <input type="text" id="review-topic-input" placeholder="Enter your literature review topic..." required aria-label="Literature review topic">
-                    <button id="generate-review-button" class="button-primary" type="submit">Generate Review</button>
+                    <button id="generate-review-button" class="button-primary" type="submit">Generate Enhanced Review</button>
                 </div>
             </form>
             <div id="review-generation-progress" class="hidden">
-                <h3 class="progress-title">Generation Progress</h3>
+                <h3 class="progress-title">Academic Review Generation Progress</h3>
                 <div id="review-progress-log"></div>
+                <div id="current-phase-indicator">
+                    <h4>Current Phase: <span id="current-phase-text">Initializing...</span></h4>
+                    <div class="phase-progress-bar">
+                        <div id="phase-progress-fill" style="width: 0%"></div>
+                    </div>
+                </div>
                 <div id="draft-display-container">
                     <div class="draft-header">
-                        <h4 class="progress-subtitle">Review Draft</h4>
+                        <h4 class="progress-subtitle">Literature Review Sections</h4>
                         <div id="draft-version-controls">
-                            <!-- Version buttons will be injected here by JS -->
+                            <!-- Section navigation will be injected here -->
                         </div>
                     </div>
                     <div id="review-draft-output" class="draft-output"></div>
+                    <div id="section-refinement-controls" class="hidden">
+                        <h5>Refine Current Section</h5>
+                        <div class="refinement-options">
+                            <button class="button-secondary" data-refinement="improve_analysis">Improve Analysis</button>
+                            <button class="button-secondary" data-refinement="enhance_synthesis">Enhance Synthesis</button>
+                            <button class="button-secondary" data-refinement="strengthen_critique">Strengthen Critique</button>
+                            <button class="button-secondary" data-refinement="improve_writing">Improve Writing</button>
+                        </div>
+                        <textarea id="refinement-feedback" placeholder="Provide specific feedback for refinement..." rows="3"></textarea>
+                        <button id="apply-refinement" class="button-primary">Apply Refinement</button>
+                    </div>
                 </div>
             </div>
         </section>
